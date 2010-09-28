@@ -1,29 +1,131 @@
 <html>
     <!-- 
-    noVNC example: simple example using default controls
+    noVNC Example: Automatically connect on page load.
     Copyright (C) 2010 Joel Martin
     Licensed under LGPL-3 (see LICENSE.txt)
+
+    Connect parameters are provided in query string:
+        http://example.com/?host=HOST&port=PORT&encrypt=1&true_color=1
     -->
     <head>
         <title>VNC Client</title>
-        <link rel="stylesheet" href="include/plain.css">
-        <link rel="alternate stylesheet" href="include/black.css" TITLE="Black">
+        <link rel="stylesheet" href="include/plain.css" title="plain">
         <!--
         <script type='text/javascript' 
             src='http://getfirebug.com/releases/lite/1.2/firebug-lite-compressed.js'></script>
         -->
         <script src="include/vnc.js"></script>
-        <script src="include/default_controls.js"></script>
     </head>
 
-    <body>
-        <div id='vnc'>Loading</div>
+    <body style="margin: 0px;">
+        <div id="VNC_controls">
+            <ul>
+                <li>Host: <input id="VNC_host"></li>
+                <li>Port: <input id="VNC_port"></li>
+                <li>Password: <input id="VNC_password"
+                    type="password"></li>
+                <li><input id="VNC_connect_button" type="button"
+                    value="Loading" disabled></li>
+            </ul>
+        </div>
+
+        <div id="VNC_screen">
+            <div id="VNC_status_bar" class="VNC_status_bar" style="margin-top: 0px;">
+                <table border=0 width="100%"><tr>
+                    <td><div id="VNC_status">Loading</div></td>
+                    <td width="1%"><div id="VNC_buttons">
+                        <input type=button value="Send CtrlAltDel"
+                            id="sendCtrlAltDelButton">
+                            </div></td>
+                </tr></table>
+            </div>
+            <canvas id="VNC_canvas" width="640px" height="20px">
+                Canvas not supported.
+            </canvas>
+        </div>
 
         <script>
+        /*jslint white: false */
+        /*global window, $, Util, RFB, */
+        "use strict";
+
+        var rfb;
+
+        function setPassword() {
+            rfb.sendPassword($('password_input').value);
+            return false;
+        }
+        function sendCtrlAltDel() {
+            rfb.sendCtrlAltDel();
+            return false;
+        }
+        function updateState(rfb, state, oldstate, msg) {
+            var s, sb, cad, klass;
+            s = $('VNC_status');
+            sb = $('VNC_status_bar');
+            c = $('VNC_connect_button');
+            cad = $('sendCtrlAltDelButton');
+            switch (state) {
+                case 'failed':
+                case 'fatal':
+                    c.disabled = true;
+                    klass = "VNC_status_error";
+                    break;
+                case 'normal':
+                    c.value = "Disconnect";
+                    c.onclick = rfb.disconnect;
+                    c.disabled = false;
+                    klass = "VNC_status_normal";
+                    break;
+                case 'disconnected':
+                case 'loaded':
+                    c.value = "Connect";
+                    c.disabled = false;
+                    c.onclick = connect;
+                    klass = "VNC_status_normal";
+                    break;
+                case 'password':
+                    msg = '<form onsubmit="return setPassword();"';
+                    msg += '  style="margin-bottom: 0px">';
+                    msg += 'Password Required: ';
+                    msg += '<input type=password size=10 id="password_input" class="VNC_status">';
+                    msg += '<\/form>';
+                    klass = "VNC_status_warn";
+                    break;
+                default:
+                    klass = "VNC_status_warn";
+            }
+
+            if (state === "normal") { cad.disabled = false; }
+            else                    { cad.disabled = true; }
+
+            if (typeof(msg) !== 'undefined') {
+                sb.setAttribute("class", klass);
+                s.innerHTML = msg;
+            }
+        }
+
         window.onload = function () {
-            DefaultControls.load('vnc');
+            var host, port, password;
+
+            $('sendCtrlAltDelButton').onclick = sendCtrlAltDel;
+
+            $('VNC_host').value = Util.getQueryVar('host', null);
+            $('VNC_port').value = Util.getQueryVar('port', null);
+            $('VNC_password').value = Util.getQueryVar('password', '');
+
+            rfb = new RFB({'encrypt':      Util.getQueryVar('encrypt', false),
+                           'true_color':   Util.getQueryVar('true_color', true),
+                           'local_cursor': Util.getQueryVar('cursor', true),
+                           'updateState':  updateState});
+        }
+
+        connect = function () {
+            rfb.connect($('VNC_host').value, $('VNC_port').value,
+                        $('VNC_password').value);
         };
         </script>
 
     </body>
 </html>
+
