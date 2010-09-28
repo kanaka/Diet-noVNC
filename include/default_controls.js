@@ -47,8 +47,6 @@ load: function(target) {
     html += '                type="checkbox"> Encrypt</li>';
     html += '            <li><input id="VNC_true_color"';
     html += '                type="checkbox" checked> True Color</li>';
-    html += '            <li><input id="VNC_cursor"';
-    html += '                type="checkbox"> Local Cursor</li>';
     html += '            <li><input id="VNC_connectTimeout"';
     html += '                type="input"> Connect Timeout (s)</li>';
     html += '            <hr>';
@@ -114,7 +112,6 @@ load: function(target) {
     DC.initSetting('password', '');
     DC.initSetting('encrypt', false);
     DC.initSetting('true_color', true);
-    DC.initSetting('cursor', false);
     DC.initSetting('connectTimeout', 2);
 
     DC.rfb = RFB({'target': 'VNC_canvas',
@@ -212,12 +209,6 @@ clickSettingsMenu: function() {
     } else {
         DC.updateSetting('encrypt');
         DC.updateSetting('true_color');
-        if (DC.rfb.get_canvas().get_cursor_uri()) {
-            DC.updateSetting('cursor');
-        } else {
-            DC.updateSetting('cursor', false);
-            $('VNC_cursor').disabled = true;
-        }
         DC.updateSetting('connectTimeout');
         DC.updateSetting('stylesheet');
         DC.updateSetting('logging');
@@ -243,12 +234,6 @@ settingsDisabled: function(disabled, rfb) {
     //Util.Debug(">> settingsDisabled");
     $('VNC_encrypt').disabled = disabled;
     $('VNC_true_color').disabled = disabled;
-    if (rfb && rfb.get_canvas().get_cursor_uri()) {
-        $('VNC_cursor').disabled = disabled;
-    } else {
-        DefaultControls.updateSetting('cursor', false);
-        $('VNC_cursor').disabled = true;
-    }
     $('VNC_connectTimeout').disabled = disabled;
     //Util.Debug("<< settingsDisabled");
 },
@@ -259,9 +244,6 @@ settingsApply: function() {
     var DC = DefaultControls;
     DC.saveSetting('encrypt');
     DC.saveSetting('true_color');
-    if (DC.rfb.get_canvas().get_cursor_uri()) {
-        DC.saveSetting('cursor');
-    }
     DC.saveSetting('connectTimeout');
     DC.saveSetting('stylesheet');
     DC.saveSetting('logging');
@@ -362,7 +344,6 @@ connect: function() {
 
     DC.rfb.set_encrypt(DC.getSetting('encrypt'));
     DC.rfb.set_true_color(DC.getSetting('true_color'));
-    DC.rfb.set_local_cursor(DC.getSetting('cursor'));
     DC.rfb.set_connectTimeout(DC.getSetting('connectTimeout'));
 
     DC.rfb.connect(host, port, password);

@@ -8,7 +8,7 @@
 
 "use strict";
 /*jslint browser: true, white: false, bitwise: false */
-/*global window, Util, Base64 */
+/*global window, Util */
 
 function Canvas(conf) {
 
@@ -37,7 +37,6 @@ function cdef(v, type, defval, desc) {
 
 // Capability settings, default can be overridden
 cdef('prefer_js',      'raw', null, 'Prefer Javascript over canvas methods');
-cdef('cursor_uri',     'raw', null, 'Can we render cursor using data URI');
 
 cdef('target',         'dom',  null, 'Canvas element for VNC viewport');
 cdef('focusContainer', 'dom',  document, 'DOM element that traps keyboard input');
@@ -160,34 +159,6 @@ function constructor() {
         conf.prefer_js = false;
         that.rgbxImage = that.rgbxImageFill;
         that.cmapImage = that.cmapImageFill;
-    }
-
-    /*
-     * Determine browser support for setting the cursor via data URI
-     * scheme
-     */
-    curDat = [];
-    for (i=0; i < 8 * 8 * 4; i += 1) {
-        curDat.push(255);
-    }
-    try {
-        curSave = c.style.cursor;
-        that.changeCursor(curDat, curDat, 2, 2, 8, 8);
-        if (c.style.cursor) {
-            if (conf.cursor_uri === null) {
-                conf.cursor_uri = true;
-            }
-            Util.Info("Data URI scheme cursor supported");
-        } else {
-            if (conf.cursor_uri === null) {
-                conf.cursor_uri = false;
-            }
-            Util.Warn("Data URI scheme cursor not supported");
-        }
-        c.style.cursor = curSave;
-    } catch (exc2) { 
-        Util.Error("Data URI scheme cursor test exception: " + exc2);
-        conf.cursor_uri = false;
     }
 
     conf.focused = true;
@@ -478,11 +449,6 @@ that.stop = function() {
     /* Work around right and middle click browser behaviors */
     Util.removeEvent(conf.focusContainer, 'click', onMouseDisable);
     Util.removeEvent(conf.focusContainer.body, 'contextmenu', onMouseDisable);
-
-    // Turn off cursor rendering
-    if (conf.cursor_uri) {
-        c.style.cursor = "default";
-    }
 };
 
 setFillColor = function(color) {
@@ -657,97 +623,6 @@ that.blitStringImage = function(str, x, y) {
     img.onload = function () { conf.ctx.drawImage(img, x, y); };
     img.src = str;
 };
-
-that.changeCursor = function(pixels, mask, hotx, hoty, w, h) {
-    var cur = [], cmap, rgb, IHDRsz, ANDsz, XORsz, url, idx, alpha, x, y;
-    //Util.Debug(">> changeCursor, x: " + hotx + ", y: " + hoty + ", w: " + w + ", h: " + h);
-    
-    if (conf.cursor_uri === false) {
-        Util.Warn("changeCursor called but no cursor data URI support");
-        return;
-    }
-
-    // Push multi-byte little-endian values
-    cur.push16le = function (num) {
-        this.push((num     ) & 0xFF,
-                  (num >> 8) & 0xFF  );
-    };
-    cur.push32le = function (num) {
-        this.push((num      ) & 0xFF,
-                  (num >>  8) & 0xFF,
-                  (num >> 16) & 0xFF,
-                  (num >> 24) & 0xFF  );
-    };
-
-    cmap = conf.colourMap;
-    IHDRsz = 40;
-    ANDsz = w * h * 4;
-    XORsz = Math.ceil( (w * h) / 8.0 );
-
-    // Main header
-    cur.push16le(0);      // Reserved
-    cur.push16le(2);      // .CUR type
-    cur.push16le(1);      // Number of images, 1 for non-animated ico
-
-    // Cursor #1 header
-    cur.push(w);          // width
-    cur.push(h);          // height
-    cur.push(0);          // colors, 0 -> true-color
-    cur.push(0);          // reserved
-    cur.push16le(hotx);   // hotspot x coordinate
-    cur.push16le(hoty);   // hotspot y coordinate
-    cur.push32le(IHDRsz + XORsz + ANDsz); // cursor data byte size
-    cur.push32le(22);     // offset of cursor data in the file
-
-    // Cursor #1 InfoHeader
-    cur.push32le(IHDRsz); // Infoheader size
-    cur.push32le(w);      // Cursor width
-    cur.push32le(h*2);    // XOR+AND height
-    cur.push16le(1);      // number of planes
-    cur.push16le(32);     // bits per pixel
-    cur.push32le(0);      // Type of compression
-    cur.push32le(XORsz + ANDsz); // Size of Image
-    cur.push32le(0);
-    cur.push32le(0);
-    cur.push32le(0);
-    cur.push32le(0);
-
-    // XOR/color data
-    for (y = h-1; y >= 0; y -= 1) {
-        for (x = 0; x < w; x += 1) {
-            idx = y * Math.ceil(w / 8) + Math.floor(x/8);
-            alpha = (mask[idx] << (x % 8)) & 0x80 ? 255 : 0;
-
-            if (conf.true_color) {
-                idx = ((w * y) + x) * 4;
-                cur.push(pixels[idx + 2]); // blue
-                cur.push(pixels[idx + 1]); // green
-                cur.push(pixels[idx + 0]); // red
-                cur.push(alpha); // red
-            } else {
-                idx = (w * y) + x;
-                rgb = cmap[pixels[idx]];
-                cur.push(rgb[2]);          // blue
-                cur.push(rgb[1]);          // green
-                cur.push(rgb[0]);          // red
-                cur.push(alpha);           // alpha
-            }
-        }
-    }
-
-    // AND/bitmask data (ignored, just needs to be right size)
-    for (y = 0; y < h; y += 1) {
-        for (x = 0; x < Math.ceil(w / 8); x += 1) {
-            cur.push(0x00);
-        }
-    }
-
-    url = "data:image/x-icon;base64," + Base64.encode(cur);
-    conf.target.style.cursor = "url(" + url + ") " + hotx + " " + hoty + ", default";
-    //Util.Debug("<< changeCursor, cur.length: " + cur.length);
-};
-
-
 
 return constructor();  // Return the public API interface
 

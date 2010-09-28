@@ -8,7 +8,7 @@
 
 "use strict";
 /*jslint white: false, browser: true, bitwise: false, plusplus: false */
-/*global window, WebSocket, Util, Canvas, VNC_native_ws, Base64, DES */
+/*global window, WebSocket, Util, Canvas, VNC_native_ws, DES */
 
 
 function RFB(conf) {
@@ -45,18 +45,9 @@ var that           = {},         // Public API interface
     // In preference order
     encodings      = [
         ['COPYRECT',         0x01 ],
-        ['TIGHT_PNG',        -260 ],
         ['HEXTILE',          0x05 ],
-        ['RRE',              0x02 ],
         ['RAW',              0x00 ],
         ['DesktopSize',      -223 ],
-        ['Cursor',           -239 ],
-
-        // Psuedo-encoding settings
-        ['JPEG_quality_lo',   -32 ],
-        //['JPEG_quality_hi',   -23 ],
-        ['compress_lo',      -255 ]
-        //['compress_hi',      -247 ]
         ],
 
     encHandlers    = {},
@@ -90,7 +81,6 @@ var that           = {},         // Public API interface
         encoding       : 0,
         subencoding    : -1,
         background     : null,
-        imgQ           : []   // TIGHT_PNG image queue
     },
 
     fb_Bpp         = 4,
@@ -136,7 +126,6 @@ cdef('focusContainer', 'dom', document, 'Area that traps keyboard input');
 
 cdef('encrypt',        'bool', false, 'Use TLS/SSL/wss encryption');
 cdef('true_color',     'bool', true,  'Request true color pixel data');
-cdef('local_cursor',   'bool', false, 'Request locally rendered cursor');
 
 cdef('connectTimeout',    'int', 2,    'Time (s) to wait for connection');
 cdef('disconnectTimeout', 'int', 3,    'Time (s) to wait for disconnection');
@@ -150,19 +139,6 @@ cdef('clipboardReceive',
      'func', function() { Util.Debug("clipboardReceive stub"); },
      'callback: clipboard contents received');
 
-
-// Override/add some specific getters/setters
-that.set_local_cursor = function(cursor) {
-    if ((!cursor) || (cursor in {'0':1, 'no':1, 'false':1})) {
-        conf.local_cursor = false;
-    } else {
-        if (canvas.get_cursor_uri()) {
-            conf.local_cursor = true;
-        } else {
-            Util.Warn("Browser does not support local cursor");
-        }
-    }
-};
 
 that.get_canvas = function() {
     return canvas;
@@ -308,7 +284,6 @@ init_vars = function() {
     FBU.subrects     = 0;  // RRE and HEXTILE
     FBU.lines        = 0;  // RAW
     FBU.tiles        = 0;  // HEXTILE
-    FBU.imgQ         = []; // TIGHT_PNG image queue
     mouse_buttonMask = 0;
     mouse_arr        = [];
 
@@ -504,16 +479,24 @@ updateState = function(state, statusMsg) {
     }
 };
 
+/* base64 encode */
 function encode_message(arr) {
-    /* base64 encode */
-    sQ = sQ + Base64.encode(arr);
+    var i, encStr = "";
+    for (i=0; i < arr.length; i++) {
+        encStr += String.fromCharCode(arr[i]);
+    }
+    sQ += window.btoa(encStr);
 }
 
+/* base64 decode */
 function decode_message(data) {
-    //Util.Debug(">> decode_message: " + data);
-    /* base64 decode */
-    rQ = rQ.concat(Base64.decode(data, 0));
-    //Util.Debug(">> decode_message, rQ: " + rQ);
+    var decStr, i, j;
+
+    decStr = window.atob(data);
+    i = rQ.length;
+    for (j=0; j < decStr.length; i++, j++) {
+        rQ[i] = decStr.charCodeAt(j);
+    }
 }
 
 function handle_message() {
@@ -1312,112 +1295,6 @@ encHandlers.HEXTILE = function display_hextile() {
     return true;
 };
 
-
-encHandlers.TIGHT_PNG = function display_tight_png() {
-    //Util.Debug(">> display_tight_png");
-    var ctl, cmode, clength, getCLength, color, img;
-    //Util.Debug("   FBU.rects: " + FBU.rects);
-    //Util.Debug("   starting rQ.slice(rQi,rQi+20): " + rQ.slice(rQi,rQi+20) + " (" + rQlen() + ")");
-
-    FBU.bytes = 1; // compression-control byte
-    if (rQlen() < FBU.bytes) {
-        Util.Debug("   waiting for TIGHT compression-control byte");
-        return false;
-    }
-
-    // Get 'compact length' header and data size
-    getCLength = function (arr, offset) {
-        var header = 1, data = 0;
-        data += arr[offset + 0] & 0x7f;
-        if (arr[offset + 0] & 0x80) {
-            header += 1;
-            data += (arr[offset + 1] & 0x7f) << 7;
-            if (arr[offset + 1] & 0x80) {
-                header += 1;
-                data += arr[offset + 2] << 14;
-            }
-        }
-        return [header, data];
-    };
-
-    ctl = rQ[rQi];
-    switch (ctl >> 4) {
-        case 0x08: cmode = "fill"; break;
-        case 0x09: cmode = "jpeg"; break;
-        case 0x0A: cmode = "png";  break;
-        default:   throw("Illegal basic compression received, ctl: " + ctl);
-    }
-    switch (cmode) {
-        // fill uses fb_depth because TPIXELs drop the padding byte
-        case "fill": FBU.bytes += fb_depth; break; // TPIXEL
-        case "jpeg": FBU.bytes += 3;            break; // max clength
-        case "png":  FBU.bytes += 3;            break; // max clength
-    }
-
-    if (rQlen() < FBU.bytes) {
-        Util.Debug("   waiting for TIGHT " + cmode + " bytes");
-        return false;
-    }
-
-    //Util.Debug("   rQ.slice(0,20): " + rQ.slice(0,20) + " (" + rQlen() + ")");
-    //Util.Debug("   cmode: " + cmode);
-
-    // Determine FBU.bytes
-    switch (cmode) {
-    case "fill":
-        rQi++; // shift off ctl
-        color = rQshiftBytes(fb_depth);
-        canvas.fillRect(FBU.x, FBU.y, FBU.width, FBU.height, color);
-        break;
-    case "jpeg":
-    case "png":
-        clength = getCLength(rQ, rQi+1);
-        FBU.bytes = 1 + clength[0] + clength[1]; // ctl + clength size + jpeg-data
-        if (rQlen() < FBU.bytes) {
-            Util.Debug("   waiting for TIGHT " + cmode + " bytes");
-            return false;
-        }
-
-        // We have everything, render it
-        //Util.Debug("   png, rQlen(): " + rQlen() + ", clength[0]: " + clength[0] + ", clength[1]: " + clength[1]);
-        rQshiftBytes(1 + clength[0]); // shift off ctl + compact length
-        img = new Image();
-        img.onload = scan_tight_imgQ;
-        FBU.imgQ.push([img, FBU.x, FBU.y]);
-        img.src = "data:image/" + cmode +
-            extract_data_uri(rQshiftBytes(clength[1]));
-        img = null;
-        break;
-    }
-    FBU.bytes = 0;
-    FBU.rects -= 1;
-    //Util.Debug("   ending rQ.slice(rQi,rQi+20): " + rQ.slice(rQi,rQi+20) + " (" + rQlen() + ")");
-    //Util.Debug("<< display_tight_png");
-    return true;
-};
-
-extract_data_uri = function(arr) {
-    //var i, stra = [];
-    //for (i=0; i< arr.length; i += 1) {
-    //    stra.push(String.fromCharCode(arr[i]));
-    //}
-    //return "," + escape(stra.join(''));
-    return ";base64," + Base64.encode(arr);
-};
-
-scan_tight_imgQ = function() {
-    var img, imgQ, ctx;
-    ctx = canvas.getContext();
-    if (rfb_state === 'normal') {
-        imgQ = FBU.imgQ;
-        while ((imgQ.length > 0) && (imgQ[0][0].complete)) {
-            img = imgQ.shift();
-            ctx.drawImage(img[0], img[1], img[2]);
-        }
-        setTimeout(scan_tight_imgQ, scan_imgQ_rate);
-    }
-};
-
 encHandlers.DesktopSize = function set_desktopsize() {
     Util.Debug(">> set_desktopsize");
     fb_width = FBU.width;
@@ -1433,44 +1310,6 @@ encHandlers.DesktopSize = function set_desktopsize() {
 
     Util.Debug("<< set_desktopsize");
     return true;
-};
-
-encHandlers.Cursor = function set_cursor() {
-    var x, y, w, h, pixelslength, masklength;
-    //Util.Debug(">> set_cursor");
-    x = FBU.x;  // hotspot-x
-    y = FBU.y;  // hotspot-y
-    w = FBU.width;
-    h = FBU.height;
-
-    pixelslength = w * h * fb_Bpp;
-    masklength = Math.floor((w + 7) / 8) * h;
-
-    if (rQlen() < (pixelslength + masklength)) {
-        //Util.Debug("waiting for cursor encoding bytes");
-        FBU.bytes = pixelslength + masklength;
-        return false;
-    }
-
-    //Util.Debug("   set_cursor, x: " + x + ", y: " + y + ", w: " + w + ", h: " + h);
-
-    canvas.changeCursor(rQshiftBytes(pixelslength),
-                            rQshiftBytes(masklength),
-                            x, y, w, h);
-
-    FBU.bytes = 0;
-    FBU.rects -= 1;
-
-    //Util.Debug("<< set_cursor");
-    return true;
-};
-
-encHandlers.JPEG_quality_lo = function set_jpeg_quality() {
-    Util.Error("Server sent jpeg_quality pseudo-encoding");
-};
-
-encHandlers.compress_lo = function set_compress_level() {
-    Util.Error("Server sent compress level pseudo-encoding");
 };
 
 /*
