@@ -43,156 +43,25 @@ Array.prototype.push32 = function (num) {
  * Logging/debug routines
  */
 
-Util._log_level =  (document.location.href.match(
+Util.log_level =  (document.location.href.match(
                     /logging=([A-Za-z0-9\._\-]*)/) ||
-                    ['warn', Util._log_level])[1];
-Util.init_logging = function (level) {
-    if (typeof level === 'undefined') {
-        level = Util._log_level;
-    } else {
-        Util._log_level = level;
-    }
-    if (typeof window.console === "undefined") {
-        if (typeof window.opera !== "undefined") {
-            window.console = {
-                'log'  : window.opera.postError,
-                'warn' : window.opera.postError,
-                'error': window.opera.postError };
-        } else {
-            window.console = {
-                'log'  : function(m) {},
-                'warn' : function(m) {},
-                'error': function(m) {}};
-        }
-    }
-
-    Util.Debug = Util.Info = Util.Warn = Util.Error = function (msg) {};
-    switch (level) {
-        case 'debug': Util.Debug = function (msg) { console.log(msg); };
-        case 'info':  Util.Info  = function (msg) { console.log(msg); };
-        case 'warn':  Util.Warn  = function (msg) { console.warn(msg); };
-        case 'error': Util.Error = function (msg) { console.error(msg); };
-        case 'none':
-            break;
-        default:
-            throw("invalid logging type '" + level + "'");
-    }
-};
-Util.get_logging = function () {
-    return Util._log_level;
+                    ['', 'warn'])[1];
+_stub = function(m) {};
+if (typeof window.console === "undefined") {
+    window.console = {'log': _stub, 'warn': _stub, 'error': _stub};
 }
-// Initialize logging level
-Util.init_logging();
 
-
-// Set defaults for Crockford style function namespaces
-Util.conf_default = function(cfg, api, v, type, defval, desc) {
-    // Description
-    api['get_' + v + '_desc'] = desc;
-    // Default getter
-    if (typeof api['get_' + v] === 'undefined') {
-        api['get_' + v] = function () {
-                return cfg[v];
-            };
-    }
-    // Default setter
-    if (typeof api['set_' + v] === 'undefined') {
-        api['set_' + v] = function (val) {
-                if (type in {'boolean':1, 'bool':1}) {
-                    if ((!val) || (val in {'0':1, 'no':1, 'false':1})) {
-                        val = false;
-                    } else {
-                        val = true;
-                    }
-                } else if (type in {'integer':1, 'int':1}) {
-                    val = parseInt(val, 10);
-                }
-                cfg[v] = val;
-            };
-    }
-
-    if (typeof cfg[v] === 'undefined') {
-        // Set to default
-        api['set_' + v](defval);
-    } else {
-        // Coerce existing setting to the right type
-        api['set_' + v](cfg[v]);
-    }
-};
-
-
-
-/*
- * Cross-browser routines
- */
-
-// Get DOM element position on page
-Util.getPosition = function (obj) {
-    var x = 0, y = 0;
-    if (obj.offsetParent) {
-        do {
-            x += obj.offsetLeft;
-            y += obj.offsetTop;
-            obj = obj.offsetParent;
-        } while (obj);
-    }
-    return {'x': x, 'y': y};
-};
-
-// Get mouse event position in DOM element
-Util.getEventPosition = function (e, obj, scale) {
-    var evt, docX, docY, pos;
-    //if (!e) evt = window.event;
-    evt = (e ? e : window.event);
-    if (evt.pageX || evt.pageY) {
-        docX = evt.pageX;
-        docY = evt.pageY;
-    } else if (evt.clientX || evt.clientY) {
-        docX = evt.clientX + document.body.scrollLeft +
-            document.documentElement.scrollLeft;
-        docY = evt.clientY + document.body.scrollTop +
-            document.documentElement.scrollTop;
-    }
-    pos = Util.getPosition(obj);
-    if (typeof scale === "undefined") {
-        scale = 1;
-    }
-    return {'x': (docX - pos.x) / scale, 'y': (docY - pos.y) / scale};
-};
-
-
-// Event registration. Based on: http://www.scottandrew.com/weblog/articles/cbs-events
-Util.addEvent = function (obj, evType, fn){
-    if (obj.attachEvent){
-        var r = obj.attachEvent("on"+evType, fn);
-        return r;
-    } else if (obj.addEventListener){
-        obj.addEventListener(evType, fn, false); 
-        return true;
-    } else {
-        throw("Handler could not be attached");
-    }
-};
-
-Util.removeEvent = function(obj, evType, fn){
-    if (obj.detachEvent){
-        var r = obj.detachEvent("on"+evType, fn);
-        return r;
-    } else if (obj.removeEventListener){
-        obj.removeEventListener(evType, fn, false);
-        return true;
-    } else {
-        throw("Handler could not be removed");
-    }
-};
-
-Util.stopEvent = function(e) {
-    if (e.stopPropagation) { e.stopPropagation(); }
-    else                   { e.cancelBubble = true; }
-
-    if (e.preventDefault)  { e.preventDefault(); }
-    else                   { e.returnValue = false; }
-};
+Util.Debug = Util.Info = Util.Warn = Util.Error = _stub;
+switch (Util.log_level) {
+    case 'debug': Util.Debug = function (msg) { console.log(msg); };
+    case 'info':  Util.Info  = function (msg) { console.log(msg); };
+    case 'warn':  Util.Warn  = function (msg) { console.warn(msg); };
+    case 'error': Util.Error = function (msg) { console.error(msg); };
+    case 'none':
+        break;
+    default:
+        throw("invalid logging type '" + level + "'");
+}
 
 
 // Set browser engine versions. Based on mootools.
@@ -210,18 +79,3 @@ Util.Engine = {
     'gecko': (function() {
             return (!document.getBoxObjectFor && window.mozInnerScreenX == null) ? false : ((document.getElementsByClassName) ? 19 : 18); }())
 };
-
-Util.Flash = (function(){
-    var v, version;
-    try {
-        v = navigator.plugins['Shockwave Flash'].description;
-    } catch(err1) {
-        try {
-            v = new ActiveXObject('ShockwaveFlash.ShockwaveFlash').GetVariable('$version');
-        } catch(err2) {
-            v = '0 r0';
-        }
-    }
-    version = v.match(/\d+/g);
-    return {version: parseInt(version[0] || 0 + '.' + version[1], 10) || 0, build: parseInt(version[2], 10) || 0};
-}()); 

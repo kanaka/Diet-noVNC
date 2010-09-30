@@ -12,7 +12,6 @@
 
 function Canvas(conf) {
 
-conf               = conf || {}; // Configuration
 var that           = {},         // Public API interface
 
     // Pre-declare functions used before definitions (jslint)jslint
@@ -32,27 +31,13 @@ var that           = {},         // Public API interface
 
 
 // Configuration settings
-function cdef(v, type, defval, desc) {
-    Util.conf_default(conf, that, v, type, defval, desc); }
-
-// Capability settings, default can be overridden
-cdef('target',         'dom',  null, 'Canvas element for VNC viewport');
-cdef('focusContainer', 'dom',  document, 'DOM element that traps keyboard input');
-cdef('focused',        'bool', true, 'Capture and send key strokes');
-
-cdef('render_mode',    'str', '', 'Canvas rendering mode (read-only)');
-
-that.set_render_mode = function () { throw("render_mode is read-only"); };
-
-// Add some other getters/setters
-that.get_width = function() {
-    return c_width;
-};
-that.get_height = function() {
-    return c_height;
-};
-
-
+that.conf = conf || {}; // Make it public
+function cdef(v, defval, desc) {
+    if (typeof conf[v] === 'undefined') conf[v] = defval; }
+cdef('target',         null,     'Canvas element for VNC viewport');
+cdef('focusContainer', document, 'DOM element that traps keyboard input');
+cdef('focused',        true,     'Capture and send key strokes');
+cdef('render_mode',    '',       'Canvas rendering mode (read-only)');
 
 //
 // Private functions
@@ -80,89 +65,37 @@ function constructor() {
 
 /* Translate DOM key event to keysym value */
 function getKeysym(e) {
-    var evt, keysym;
+    var evt, keysym, map1, map2, map3
     evt = (e ? e : window.event);
 
+    map1 = {
+        8  : 0x08, 9  : 0x09, 13 : 0x0D, 27 : 0x1B, 45 : 0x63, 46 : 0xFF,
+        36 : 0x50, 35 : 0x57, 33 : 0x55, 34 : 0x56, 37 : 0x51, 38 : 0x52,
+        39 : 0x53, 40 : 0x54, 112: 0xBE, 113: 0xBF, 114: 0xC0, 115: 0xC1,
+        116: 0xC2, 117: 0xC3, 118: 0xC4, 119: 0xC5, 120: 0xC6, 121: 0xC7,
+        122: 0xC8, 123: 0xC9, 16 : 0xE1, 17 : 0xE3, 18 : 0xE9 };
+
+    map2 = {
+        186: 59, 187: 61, 188: 44, 189: 45, 190: 46, 191: 47,
+        192: 96, 219: 91, 220: 92, 221: 93, 222: 39 };
+    if (Util.Engine.gecko) map2[109] = 45;
+
+    map3 = {
+        48: 41, 49: 33, 50: 64, 51: 35, 52: 36, 53: 37, 54: 94,
+        55: 38, 56: 42, 57: 40, 59: 58, 61: 43, 44: 60, 45: 95,
+        46: 62, 47: 63, 96: 126, 91: 123, 92: 124, 93: 125, 39: 34 }
+
+    keysym = evt.keyCode;
+
     /* Remap modifier and special keys */
-    switch ( evt.keyCode ) {
-        case 8         : keysym = 0xFF08; break; // BACKSPACE
-        case 9         : keysym = 0xFF09; break; // TAB
-        case 13        : keysym = 0xFF0D; break; // ENTER
-        case 27        : keysym = 0xFF1B; break; // ESCAPE
-        case 45        : keysym = 0xFF63; break; // INSERT
-        case 46        : keysym = 0xFFFF; break; // DELETE
-        case 36        : keysym = 0xFF50; break; // HOME
-        case 35        : keysym = 0xFF57; break; // END
-        case 33        : keysym = 0xFF55; break; // PAGE_UP
-        case 34        : keysym = 0xFF56; break; // PAGE_DOWN
-        case 37        : keysym = 0xFF51; break; // LEFT
-        case 38        : keysym = 0xFF52; break; // UP
-        case 39        : keysym = 0xFF53; break; // RIGHT
-        case 40        : keysym = 0xFF54; break; // DOWN
-        case 112       : keysym = 0xFFBE; break; // F1
-        case 113       : keysym = 0xFFBF; break; // F2
-        case 114       : keysym = 0xFFC0; break; // F3
-        case 115       : keysym = 0xFFC1; break; // F4
-        case 116       : keysym = 0xFFC2; break; // F5
-        case 117       : keysym = 0xFFC3; break; // F6
-        case 118       : keysym = 0xFFC4; break; // F7
-        case 119       : keysym = 0xFFC5; break; // F8
-        case 120       : keysym = 0xFFC6; break; // F9
-        case 121       : keysym = 0xFFC7; break; // F10
-        case 122       : keysym = 0xFFC8; break; // F11
-        case 123       : keysym = 0xFFC9; break; // F12
-        case 16        : keysym = 0xFFE1; break; // SHIFT
-        case 17        : keysym = 0xFFE3; break; // CONTROL
-        //case 18        : keysym = 0xFFE7; break; // Left Meta (Mac Option)
-        case 18        : keysym = 0xFFE9; break; // Left ALT (Mac Command)
-        default        : keysym = evt.keyCode; break;
-    }
+    if (keysym in map1) keysym = 0xFF00 + map1[keysym];
 
     /* Remap symbols */
-    switch (keysym) {
-        case 186       : keysym = 59; break; // ;  (IE)
-        case 187       : keysym = 61; break; // =  (IE)
-        case 188       : keysym = 44; break; // ,  (Mozilla, IE)
-        case 109       :                     // -  (Mozilla)
-            if (Util.Engine.gecko) {
-                         keysym = 45; }
-                                      break;
-        case 189       : keysym = 45; break; // -  (IE)
-        case 190       : keysym = 46; break; // .  (Mozilla, IE)
-        case 191       : keysym = 47; break; // /  (Mozilla, IE)
-        case 192       : keysym = 96; break; // `  (Mozilla, IE)
-        case 219       : keysym = 91; break; // [  (Mozilla, IE)
-        case 220       : keysym = 92; break; // \  (Mozilla, IE)
-        case 221       : keysym = 93; break; // ]  (Mozilla, IE)
-        case 222       : keysym = 39; break; // '  (Mozilla, IE)
-    }
+    if (keysym in map2) keysym = map2[keysym];
     
     /* Remap shifted and unshifted keys */
     if (!!evt.shiftKey) {
-        switch (keysym) {
-            case 48        : keysym = 41 ; break; // )  (shifted 0)
-            case 49        : keysym = 33 ; break; // !  (shifted 1)
-            case 50        : keysym = 64 ; break; // @  (shifted 2)
-            case 51        : keysym = 35 ; break; // #  (shifted 3)
-            case 52        : keysym = 36 ; break; // $  (shifted 4)
-            case 53        : keysym = 37 ; break; // %  (shifted 5)
-            case 54        : keysym = 94 ; break; // ^  (shifted 6)
-            case 55        : keysym = 38 ; break; // &  (shifted 7)
-            case 56        : keysym = 42 ; break; // *  (shifted 8)
-            case 57        : keysym = 40 ; break; // (  (shifted 9)
-
-            case 59        : keysym = 58 ; break; // :  (shifted `)
-            case 61        : keysym = 43 ; break; // +  (shifted ;)
-            case 44        : keysym = 60 ; break; // <  (shifted ,)
-            case 45        : keysym = 95 ; break; // _  (shifted -)
-            case 46        : keysym = 62 ; break; // >  (shifted .)
-            case 47        : keysym = 63 ; break; // ?  (shifted /)
-            case 96        : keysym = 126; break; // ~  (shifted `)
-            case 91        : keysym = 123; break; // {  (shifted [)
-            case 92        : keysym = 124; break; // |  (shifted \)
-            case 93        : keysym = 125; break; // }  (shifted ])
-            case 39        : keysym = 34 ; break; // "  (shifted ')
-        }
+        if (keysym in map3) keysym = map3[keysym];
     } else if ((keysym >= 65) && (keysym <=90)) {
         /* Remap unshifted A-Z */
         keysym += 32;
@@ -171,19 +104,69 @@ function getKeysym(e) {
     return keysym;
 }
 
+// Cross-browser mouse event position within DOM element
+function getEventPosition(e, obj) {
+    var evt, docX, docY, x = 0, y = 0;
+    evt = (e ? e : window.event);
+    if (evt.pageX || evt.pageY) {
+        docX = evt.pageX;
+        docY = evt.pageY;
+    } else if (evt.clientX || evt.clientY) {
+        docX = evt.clientX + document.body.scrollLeft +
+            document.documentElement.scrollLeft;
+        docY = evt.clientY + document.body.scrollTop +
+            document.documentElement.scrollTop;
+    }
+    if (obj.offsetParent) {
+        do {
+            x += obj.offsetLeft;
+            y += obj.offsetTop;
+            obj = obj.offsetParent;
+        } while (obj);
+    }
+    return {'x': (docX - x), 'y': (docY - y)};
+};
+
+
+// Event registration. Based on: http://www.scottandrew.com/weblog/articles/cbs-events
+function addEvent(o, evType, fn){
+    var r = true;
+    if      (o.attachEvent)      r = o.attachEvent("on"+evType, fn);
+    else if (o.addEventListener) o.addEventListener(evType, fn, false);
+    else                         throw("Handler could not be attached");
+    return r;
+};
+
+function removeEvent(o, evType, fn){
+    var r = true;
+    if (o.detachEvent)              r = o.detachEvent("on"+evType, fn);
+    else if (o.removeEventListener) o.removeEventListener(evType, fn, false);
+    else                            throw("Handler could not be removed");
+    return r;
+};
+
+function stopEvent(e) {
+    if (e.stopPropagation) { e.stopPropagation(); }
+    else                   { e.cancelBubble = true; }
+
+    if (e.preventDefault)  { e.preventDefault(); }
+    else                   { e.returnValue = false; }
+};
+
+
 function onMouseButton(e, down) {
     var evt, pos, bmask;
     if (! conf.focused) {
         return true;
     }
     evt = (e ? e : window.event);
-    pos = Util.getEventPosition(e, conf.target, conf.scale);
+    pos = getEventPosition(e, conf.target);
     bmask = 1 << evt.button;
     //Util.Debug('mouse ' + pos.x + "," + pos.y + " down: " + down + " bmask: " + bmask);
     if (c_mouseButton) {
         c_mouseButton(pos.x, pos.y, down, bmask);
     }
-    Util.stopEvent(e);
+    stopEvent(e);
     return false;
 }
 
@@ -198,7 +181,7 @@ function onMouseUp(e) {
 function onMouseWheel(e) {
     var evt, pos, bmask, wheelData;
     evt = (e ? e : window.event);
-    pos = Util.getEventPosition(e, conf.target, conf.scale);
+    pos = getEventPosition(e, conf.target);
     wheelData = evt.detail ? evt.detail * -1 : evt.wheelDelta / 40;
     if (wheelData > 0) {
         bmask = 1 << 3;
@@ -210,14 +193,14 @@ function onMouseWheel(e) {
         c_mouseButton(pos.x, pos.y, 1, bmask);
         c_mouseButton(pos.x, pos.y, 0, bmask);
     }
-    Util.stopEvent(e);
+    stopEvent(e);
     return false;
 }
 
 function onMouseMove(e) {
     var evt, pos;
     evt = (e ? e : window.event);
-    pos = Util.getEventPosition(e, conf.target, conf.scale);
+    pos = getEventPosition(e, conf.target);
     //Util.Debug('mouse ' + evt.which + '/' + evt.button + ' up:' + pos.x + "," + pos.y);
     if (c_mouseMove) {
         c_mouseMove(pos.x, pos.y);
@@ -227,14 +210,14 @@ function onMouseMove(e) {
 function onKeyDown(e) {
     if (! conf.focused) return true;
     if (c_keyPress) c_keyPress(getKeysym(e), 1);
-    Util.stopEvent(e);
+    stopEvent(e);
     return false;
 }
 
 function onKeyUp(e) {
     if (! conf.focused) return true;
     if (c_keyPress) c_keyPress(getKeysym(e), 0);
-    Util.stopEvent(e);
+    stopEvent(e);
     return false;
 }
 
@@ -242,12 +225,12 @@ function onMouseDisable(e) {
     var evt, pos;
     if (! conf.focused) return true;
     evt = (e ? e : window.event);
-    pos = Util.getEventPosition(e, conf.target, conf.scale);
+    pos = getEventPosition(e, conf.target);
     /* Stop propagation if inside canvas area */
     if ((pos.x >= 0) && (pos.y >= 0) &&
         (pos.x < c_width) && (pos.y < c_height)) {
         //Util.Debug("mouse event disabled");
-        Util.stopEvent(e);
+        stopEvent(e);
         return false;
     }
     //Util.Debug("mouse event not disabled");
@@ -271,17 +254,17 @@ that.start = function(keyPressFunc, mouseButtonFunc, mouseMoveFunc) {
     c_mouseButton = mouseButtonFunc || null;
     c_mouseMove = mouseMoveFunc || null;
 
-    Util.addEvent(conf.focusContainer, 'keydown', onKeyDown);
-    Util.addEvent(conf.focusContainer, 'keyup', onKeyUp);
-    Util.addEvent(c, 'mousedown', onMouseDown);
-    Util.addEvent(c, 'mouseup', onMouseUp);
-    Util.addEvent(c, 'mousemove', onMouseMove);
-    Util.addEvent(c, (Util.Engine.gecko) ? 'DOMMouseScroll' : 'mousewheel',
+    addEvent(conf.focusContainer, 'keydown', onKeyDown);
+    addEvent(conf.focusContainer, 'keyup', onKeyUp);
+    addEvent(c, 'mousedown', onMouseDown);
+    addEvent(c, 'mouseup', onMouseUp);
+    addEvent(c, 'mousemove', onMouseMove);
+    addEvent(c, (Util.Engine.gecko) ? 'DOMMouseScroll' : 'mousewheel',
             onMouseWheel);
 
     /* Work around right and middle click browser behaviors */
-    Util.addEvent(conf.focusContainer, 'click', onMouseDisable);
-    Util.addEvent(conf.focusContainer.body, 'contextmenu', onMouseDisable);
+    addEvent(conf.focusContainer, 'click', onMouseDisable);
+    addEvent(conf.focusContainer.body, 'contextmenu', onMouseDisable);
 
     Util.Debug("<< Canvas.start");
 };
@@ -303,17 +286,17 @@ that.clear = function() {
 
 that.stop = function() {
     var c = conf.target;
-    Util.removeEvent(conf.focusContainer, 'keydown', onKeyDown);
-    Util.removeEvent(conf.focusContainer, 'keyup', onKeyUp);
-    Util.removeEvent(c, 'mousedown', onMouseDown);
-    Util.removeEvent(c, 'mouseup', onMouseUp);
-    Util.removeEvent(c, 'mousemove', onMouseMove);
-    Util.removeEvent(c, (Util.Engine.gecko) ? 'DOMMouseScroll' : 'mousewheel',
+    removeEvent(conf.focusContainer, 'keydown', onKeyDown);
+    removeEvent(conf.focusContainer, 'keyup', onKeyUp);
+    removeEvent(c, 'mousedown', onMouseDown);
+    removeEvent(c, 'mouseup', onMouseUp);
+    removeEvent(c, 'mousemove', onMouseMove);
+    removeEvent(c, (Util.Engine.gecko) ? 'DOMMouseScroll' : 'mousewheel',
             onMouseWheel);
 
     /* Work around right and middle click browser behaviors */
-    Util.removeEvent(conf.focusContainer, 'click', onMouseDisable);
-    Util.removeEvent(conf.focusContainer.body, 'contextmenu', onMouseDisable);
+    removeEvent(conf.focusContainer, 'click', onMouseDisable);
+    removeEvent(conf.focusContainer.body, 'contextmenu', onMouseDisable);
 };
 
 fillRect = function(x, y, width, height, color) {

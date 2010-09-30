@@ -13,7 +13,6 @@
 
 function RFB(conf) {
 
-conf               = conf || {}; // Configuration
 var that           = {},         // Public API interface
 
     // Pre-declare private functions used before definitions (jslint)
@@ -21,12 +20,9 @@ var that           = {},         // Public API interface
     framebufferUpdate, print_stats,
 
     pixelFormat, clientEncodings, fbUpdateRequest,
-    keyEvent, pointerEvent, clientCutText,
-
-    extract_data_uri, scan_tight_imgQ,
+    keyEvent, pointerEvent,
 
     send_array, checkEvents,  // Overridable for testing
-
 
     //
     // Private RFB namespace variables
@@ -52,7 +48,6 @@ var that           = {},         // Public API interface
 
     encHandlers    = {},
     encNames       = {}, 
-    encStats       = {},     // [rectCnt, rectCntTot]
 
     ws             = null,   // Web Socket object
     canvas         = null,   // Canvas object
@@ -89,24 +84,7 @@ var that           = {},         // Public API interface
     fb_height      = 0,
     fb_name        = "",
 
-    cuttext        = 'none', // ServerCutText wait state
-    cuttext_length = 0,
-
-    scan_imgQ_rate = 100,
     last_req_time  = 0,
-    rre_chunk_sz   = 100,
-
-    timing         = {
-        last_fbu       : 0,
-        fbu_total      : 0,
-        fbu_total_cnt  : 0,
-        full_fbu_total : 0,
-        full_fbu_cnt   : 0,
-
-        fbu_rt_start   : 0,
-        fbu_rt_total   : 0,
-        fbu_rt_cnt     : 0
-    },
 
     test_mode        = false,
 
@@ -115,35 +93,20 @@ var that           = {},         // Public API interface
     mouse_arr        = [];
 
 
-//
 // Configuration settings
-//
-function cdef(v, type, defval, desc) {
-    Util.conf_default(conf, that, v, type, defval, desc); }
+that.conf = conf || {}; // Make it public
+function cdef(v, defval, desc) { 
+    if (typeof conf[v] === 'undefined') conf[v] = defval; }
 
-cdef('target',         'dom', null, 'VNC viewport rendering Canvas');
-cdef('focusContainer', 'dom', document, 'Area that traps keyboard input');
+cdef('target',            null, 'VNC viewport rendering Canvas');
+cdef('focusContainer',    document, 'Area that traps keyboard input');
+cdef('encrypt',           false, 'Use TLS/SSL/wss encryption');
+cdef('connectTimeout',    2,    'Time (s) to wait for connection');
+cdef('disconnectTimeout', 3,    'Time (s) to wait for disconnection');
+cdef('check_rate',        217,  'Timing (ms) of send/receive check');
+cdef('fbu_req_rate',      1413, 'Timing (ms) of frameBufferUpdate requests');
 
-cdef('encrypt',        'bool', false, 'Use TLS/SSL/wss encryption');
-
-cdef('connectTimeout',    'int', 2,    'Time (s) to wait for connection');
-cdef('disconnectTimeout', 'int', 3,    'Time (s) to wait for disconnection');
-cdef('check_rate',        'int', 217,  'Timing (ms) of send/receive check');
-cdef('fbu_req_rate',      'int', 1413, 'Timing (ms) of frameBufferUpdate requests');
-
-cdef('updateState',
-     'func', function() { Util.Debug("updateState stub"); },
-     'callback: state update');
-cdef('clipboardReceive',
-     'func', function() { Util.Debug("clipboardReceive stub"); },
-     'callback: clipboard contents received');
-
-
-that.get_canvas = function() {
-    return canvas;
-};
-
-
+cdef('updateState', function() {}, 'callback: state update');
 
 
 //
@@ -191,7 +154,6 @@ function constructor() {
     for (i=0; i < encodings.length; i+=1) {
         encHandlers[encodings[i][1]] = encHandlers[encodings[i][0]];
         encNames[encodings[i][1]] = encodings[i][0];
-        encStats[encodings[i][1]] = [0, 0];
     }
     // Initialize canvas
     try {
@@ -201,7 +163,7 @@ function constructor() {
         Util.Error("Canvas exception: " + exc);
         updateState('fatal', "No working Canvas");
     }
-    rmode = canvas.get_render_mode();
+    rmode = canvas.conf.render_mode;
 
     init_vars();
 
@@ -259,8 +221,6 @@ function init_ws() {
 
 init_vars = function() {
     /* Reset state */
-    cuttext          = 'none';
-    cuttext_length   = 0;
     rQ               = [];
     rQi              = 0;
     sQ               = "";
@@ -270,32 +230,6 @@ init_vars = function() {
     FBU.tiles        = 0;  // HEXTILE
     mouse_buttonMask = 0;
     mouse_arr        = [];
-
-    // Clear the per connection encoding stats
-    for (var i=0; i < encodings.length; i+=1) {
-        encStats[encodings[i][1]][0] = 0;
-    }
-};
-
-// Print statistics
-print_stats = function() {
-    var i, encName, s;
-    Util.Info("Encoding stats for this connection:");
-    for (i=0; i < encodings.length; i+=1) {
-        s = encStats[encodings[i][1]];
-        if ((s[0] + s[1]) > 0) {
-            Util.Info("    " + encodings[i][0] + ": " +
-                      s[0] + " rects");
-        }
-    }
-    Util.Info("Encoding stats since page load:");
-    for (i=0; i < encodings.length; i+=1) {
-        s = encStats[encodings[i][1]];
-        if ((s[0] + s[1]) > 0) {
-            Util.Info("    " + encodings[i][0] + ": "
-                      + s[1] + " rects");
-        }
-    }
 };
 
 //
@@ -350,7 +284,7 @@ updateState = function(state, statusMsg) {
 
         if (canvas && canvas.getContext()) {
             canvas.stop();
-            if (Util.get_logging() !== 'debug') {
+            if (Util.log_level !== 'debug') {
                 canvas.clear();
             }
         }
@@ -426,8 +360,6 @@ updateState = function(state, statusMsg) {
                     updateState('failed', "Disconnect timeout");
                 }, conf.disconnectTimeout * 1000);
         }
-
-        print_stats();
 
         // WebSocket.onclose transitions to 'disconnected'
         break;
@@ -829,12 +761,10 @@ init_msg = function() {
         response = pixelFormat();
         response = response.concat(clientEncodings());
         response = response.concat(fbUpdateRequest(0));
-        timing.fbu_rt_start = (new Date()).getTime();
         send_array(response);
         
         /* Start pushing/polling */
         setTimeout(checkEvents, conf.check_rate);
-        setTimeout(scan_tight_imgQ, scan_imgQ_rate);
 
         if (conf.encrypt) {
             updateState('normal', "Connected (encrypted) to: " + fb_name);
@@ -849,12 +779,10 @@ init_msg = function() {
 /* Normal RFB/VNC server message handler */
 normal_msg = function() {
     var ret = true, msg_type,
-        c, first_colour, num_colours, red, green, blue;
+        c, length;
 
     if (FBU.rects > 0) {
         msg_type = 0;
-    } else if (cuttext !== 'none') {
-        msg_type = 3;
     } else {
         msg_type = rQ[rQi++];
     }
@@ -870,25 +798,19 @@ normal_msg = function() {
         break;
     case 3:  // ServerCutText
         Util.Debug("ServerCutText");
-        Util.Debug("rQ:" + rQ.slice(0,20));
-        if (cuttext === 'none') {
-            cuttext = 'header';
-        }
-        if (cuttext === 'header') {
-            if (rQlen() < 7) {
-                //Util.Debug("waiting for ServerCutText header");
-                return false;
-            }
-            rQshiftBytes(3);  // Padding
-            cuttext_length = rQshift32();
-        }
-        cuttext = 'bytes';
-        if (rQlen() < cuttext_length) {
-            //Util.Debug("waiting for ServerCutText bytes");
+        if (rQlen() < 7) {
+            //Util.Debug("waiting for ServerCutText header");
+            rQ--;
             return false;
         }
-        conf.clipboardReceive(that, rQshiftStr(cuttext_length));
-        cuttext = 'none';
+        rQshiftBytes(3);  // Padding
+        length = rQshift32();
+        if (rQlen() < length) {
+            //Util.Debug("waiting for ServerCutText bytes");
+            rQ-=8;
+            return false;
+        }
+        Util.Debug("ServerCutText: " + rQshiftStr(length));
         break;
     default:
         updateState('failed',
@@ -915,11 +837,6 @@ framebufferUpdate = function() {
         rQi++;
         FBU.rects = rQshift16();
         FBU.bytes = 0;
-        timing.cur_fbu = 0;
-        if (timing.fbu_rt_start > 0) {
-            now = (new Date()).getTime();
-            Util.Info("First FBU latency: " + (now - timing.fbu_rt_start));
-        }
     }
 
     while (FBU.rects > 0) {
@@ -964,47 +881,7 @@ framebufferUpdate = function() {
             }
         }
 
-        timing.last_fbu = (new Date()).getTime();
-
-        ret = encHandlers[FBU.encoding]();
-
-        now = (new Date()).getTime();
-        timing.cur_fbu += (now - timing.last_fbu);
-
-        if (ret) {
-            encStats[FBU.encoding][0] += 1;
-            encStats[FBU.encoding][1] += 1;
-        }
-
-        if (FBU.rects === 0) {
-            if (((FBU.width === fb_width) &&
-                        (FBU.height === fb_height)) ||
-                    (timing.fbu_rt_start > 0)) {
-                timing.full_fbu_total += timing.cur_fbu;
-                timing.full_fbu_cnt += 1;
-                Util.Info("Timing of full FBU, cur: " +
-                          timing.cur_fbu + ", total: " +
-                          timing.full_fbu_total + ", cnt: " +
-                          timing.full_fbu_cnt + ", avg: " +
-                          (timing.full_fbu_total /
-                              timing.full_fbu_cnt));
-            }
-            if (timing.fbu_rt_start > 0) {
-                fbu_rt_diff = now - timing.fbu_rt_start;
-                timing.fbu_rt_total += fbu_rt_diff;
-                timing.fbu_rt_cnt += 1;
-                Util.Info("full FBU round-trip, cur: " +
-                          fbu_rt_diff + ", total: " +
-                          timing.fbu_rt_total + ", cnt: " +
-                          timing.fbu_rt_cnt + ", avg: " +
-                          (timing.fbu_rt_total /
-                              timing.fbu_rt_cnt));
-                timing.fbu_rt_start = 0;
-            }
-        }
-        if (! ret) {
-            break; // false ret means need more data
-        }
+        return encHandlers[FBU.encoding](); // false means need more data
     }
     return ret;
 };
@@ -1204,11 +1081,7 @@ encHandlers.DesktopSize = function set_desktopsize() {
  */
 
 pixelFormat = function() {
-    var arr;
-    arr = [0];     // msg-type
-    arr.push8(0);  // padding
-    arr.push8(0);  // padding
-    arr.push8(0);  // padding
+    var arr = [0, 0, 0, 0]; // msg-type
 
     arr.push8(fb_Bpp * 8); // bits-per-pixel
     arr.push8(fb_depth * 8); // depth
@@ -1229,7 +1102,7 @@ pixelFormat = function() {
 };
 
 clientEncodings = function() {
-    var arr, i, encList = [];
+    var arr = [2, 0], i, encList = [];
 
     for (i=0; i<encodings.length; i += 1) {
         if ((encodings[i][0] === "Cursor") &&
@@ -1240,9 +1113,6 @@ clientEncodings = function() {
         }
     }
 
-    arr = [2];     // msg-type
-    arr.push8(0);  // padding
-
     arr.push16(encList.length); // encoding count
     for (i=0; i < encList.length; i += 1) {
         arr.push32(encList[i]);
@@ -1251,13 +1121,11 @@ clientEncodings = function() {
 };
 
 fbUpdateRequest = function(incremental, x, y, xw, yw) {
+    var arr = [3, incremental];
     if (!x) { x = 0; }
     if (!y) { y = 0; }
     if (!xw) { xw = fb_width; }
     if (!yw) { yw = fb_height; }
-    var arr;
-    arr = [3];  // msg-type
-    arr.push8(incremental);
     arr.push16(x);
     arr.push16(y);
     arr.push16(xw);
@@ -1266,38 +1134,17 @@ fbUpdateRequest = function(incremental, x, y, xw, yw) {
 };
 
 keyEvent = function(keysym, down) {
-    var arr;
-    arr = [4];  // msg-type
-    arr.push8(down);
-    arr.push16(0);
+    var arr = [4, down, 0, 0];
     arr.push32(keysym);
     return arr;
 };
 
 pointerEvent = function(x, y) {
-    var arr;
-    arr = [5];  // msg-type
-    arr.push8(mouse_buttonMask);
+    var arr = [5, mouse_buttonMask];
     arr.push16(x);
     arr.push16(y);
     return arr;
 };
-
-clientCutText = function(text) {
-    var arr, i, n;
-    arr = [6];     // msg-type
-    arr.push8(0);  // padding
-    arr.push8(0);  // padding
-    arr.push8(0);  // padding
-    arr.push32(text.length);
-    n = text.length;
-    for (i=0; i < n; i+=1) {
-        arr.push(text.charCodeAt(i));
-    }
-    return arr;
-};
-
-
 
 //
 // Public API interface functions
@@ -1355,11 +1202,6 @@ that.sendKey = function(code, down) {
     }
     arr = arr.concat(fbUpdateRequest(1));
     send_array(arr);
-};
-
-that.clipboardPasteFrom = function(text) {
-    if (rfb_state !== "normal") { return; }
-    send_array(clientCutText(text));
 };
 
 that.testMode = function(override_send_array) {
