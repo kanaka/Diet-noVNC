@@ -1,134 +1,136 @@
 <html>
-    <!-- 
-    noVNC Example: Automatically connect on page load.
-    Copyright (C) 2010 Joel Martin
-    Licensed under LGPL-3 (see LICENSE.txt)
 
-    Connect parameters are provided in query string:
-        http://example.com/?host=HOST&port=PORT&encrypt=1&true_color=1
-    -->
-    <head>
-        <title>VNC Client</title>
-        <link rel="stylesheet" href="include/plain.css" title="plain">
-        <!--
-        <script type='text/javascript' 
-            src='http://getfirebug.com/releases/lite/1.2/firebug-lite-compressed.js'></script>
-        -->
-        <script src="include/util.js"></script>
-        <script src="include/des.js"></script>
-        <script src="include/canvas.js"></script>
-        <script src="include/rfb.js"></script>
-    </head>
+<!-- 
+noVNC Example: Automatically connect on page load.
+Copyright (C) 2010 Joel Martin
+Licensed under LGPL-3 (see LICENSE.txt)
 
-    <body style="margin: 0px;">
-        <div id="VNC_controls">
-            <ul>
-                <li>Host: <input id="VNC_host"></li>
-                <li>Port: <input id="VNC_port"></li>
-                <li>Password: <input id="VNC_password"
-                    type="password"></li>
-                <li><input id="VNC_connect_button" type="button"
-                    value="Loading" disabled></li>
-            </ul>
+Connect parameters are provided in query string:
+    http://example.com/?host=HOST&port=PORT&encrypt=1
+-->
+<head>
+    <title>VNC Client</title>
+    <script src="include/util.js"></script>
+    <script src="include/des.js"></script>
+    <script src="include/canvas.js"></script>
+    <script src="include/rfb.js"></script>
+
+    <style>
+        body { margin: 10; }
+        #controls { overflow: hidden; }
+        #controls ul { list-style: none; margin: 0; padding: 0; }
+        #controls li { float: left; margin-right: 15px; }
+        #controls input { width: 80px; }
+        #screen  { display: table; }
+        #top_bar { margin-top: 5; }
+        .sNormal { background: #eee; }
+        .sError  { background: #f44; }
+        .sWarn   { background: #ff4; }
+    </style>
+</head>
+
+<body>
+    <div id="controls"> <ul>
+        <li>Host: <input id="host"></li>
+        <li>Port: <input id="port"></li>
+        <li>Password: <input id="passwd" type="password"></li>
+        <li><input id="cBtn" type="button" value="Loading" disabled></li>
+    </ul> </div>
+
+    <div id="screen">
+        <div id="top_bar" class="top_bar">
+            <table border=0 width="100%"><tr>
+                <td><div id="status">Loading</div></td>
+                <td width="1%">
+                    <input id="cadBtn" type=button value="Send CtrlAltDel">
+                </td>
+            </tr></table>
         </div>
+        <canvas id="vnc" width="640px" height="20px">
+            Canvas not supported.
+        </canvas>
+    </div>
 
-        <div id="VNC_screen">
-            <div id="VNC_status_bar" class="VNC_status_bar" style="margin-top: 0px;">
-                <table border=0 width="100%"><tr>
-                    <td><div id="VNC_status">Loading</div></td>
-                    <td width="1%"><div id="VNC_buttons">
-                        <input type=button value="Send CtrlAltDel"
-                            id="sendCtrlAltDelButton">
-                            </div></td>
-                </tr></table>
-            </div>
-            <canvas id="VNC_canvas" width="640px" height="20px">
-                Canvas not supported.
-            </canvas>
-        </div>
+    <script>
+    /*jslint white: false */
+    /*global window, $, Util, RFB, */
+    "use strict";
 
-        <script>
-        /*jslint white: false */
-        /*global window, $, Util, RFB, */
-        "use strict";
+    var rfb;
 
-        var rfb;
+    // Read a query string variable
+    function getQueryVar(name, defVal) {
+        var re = new RegExp('[?][^#]*' + name + '=([^&#]*)');
+        if (typeof defVal === 'undefined') { defVal = null; }
+        return (document.location.href.match(re) || ['',defVal])[1];
+    };
 
-        function setPassword() {
-            rfb.sendPassword($('password_input').value);
-            return false;
+    // Simple DOM selector by ID
+    $ = function (id) {
+        return document.getElementById ? document.getElementById(id) :
+               document.all ? document.all[id] :
+               document.layers ? document.layers[id] : undefined;
+    };
+
+    function connect() {
+        rfb.connect($('host').value, $('port').value, $('passwd').value);
+    };
+    function setPassword() {
+        rfb.sendPassword($('new_passwd').value);
+        return false;
+    }
+    function sendCtrlAltDel() {
+        rfb.sendCtrlAltDel();
+        return false;
+    }
+    function updateState(rfb, state, oldstate, msg) {
+        var s = $('status'), c = $('cBtn'), klass;
+        $('cadBtn').disabled = true;
+        c.disabled = false;
+        c.value = "Connect";
+        c.onclick = connect;
+        if (state in {'normal':1, 'password':1}) {
+            c.value = "Disconnect";
+            c.onclick = rfb.disconnect;
+        } else if (state in {'fatal':1, 'failed':1}) {
+            c.disabled = true;
         }
-        function sendCtrlAltDel() {
-            rfb.sendCtrlAltDel();
-            return false;
+        if (state === 'password') {
+            msg = '<form onsubmit="return setPassword();"';
+            msg += '  style="margin-bottom: 0px">';
+            msg += 'Password Required: ';
+            msg += '<input type=password size=10 id="new_passwd" class="status">';
+            msg += '<\/form>';
         }
-        function updateState(rfb, state, oldstate, msg) {
-            var s, sb, cad, klass;
-            s = $('VNC_status');
-            sb = $('VNC_status_bar');
-            c = $('VNC_connect_button');
-            cad = $('sendCtrlAltDelButton');
-            switch (state) {
-                case 'failed':
-                case 'fatal':
-                    c.disabled = true;
-                    klass = "VNC_status_error";
-                    break;
-                case 'normal':
-                    c.value = "Disconnect";
-                    c.onclick = rfb.disconnect;
-                    c.disabled = false;
-                    klass = "VNC_status_normal";
-                    break;
-                case 'disconnected':
-                case 'loaded':
-                    c.value = "Connect";
-                    c.disabled = false;
-                    c.onclick = connect;
-                    klass = "VNC_status_normal";
-                    break;
-                case 'password':
-                    msg = '<form onsubmit="return setPassword();"';
-                    msg += '  style="margin-bottom: 0px">';
-                    msg += 'Password Required: ';
-                    msg += '<input type=password size=10 id="password_input" class="VNC_status">';
-                    msg += '<\/form>';
-                    klass = "VNC_status_warn";
-                    break;
-                default:
-                    klass = "VNC_status_warn";
-            }
-
-            if (state === "normal") { cad.disabled = false; }
-            else                    { cad.disabled = true; }
-
-            if (typeof(msg) !== 'undefined') {
-                sb.setAttribute("class", klass);
-                s.innerHTML = msg;
-            }
+        switch (state) {
+            case 'failed':       klass = "sError";  break;
+            case 'fatal':        klass = "sError";  break;
+            case 'normal':       $('cadBtn').disabled = false;
+                                 klass = "sNormal"; break;
+            case 'disconnected': klass = "sNormal"; break;
+            case 'loaded':       klass = "sNormal"; break;
+            default:             klass = "sWarn";
         }
 
-        window.onload = function () {
-            var host, port, password;
-
-            $('sendCtrlAltDelButton').onclick = sendCtrlAltDel;
-
-            $('VNC_host').value = Util.getQueryVar('host', null);
-            $('VNC_port').value = Util.getQueryVar('port', null);
-            $('VNC_password').value = Util.getQueryVar('password', '');
-
-            rfb = new RFB({'encrypt':      Util.getQueryVar('encrypt', false),
-                           'true_color':   Util.getQueryVar('true_color', true),
-                           'local_cursor': Util.getQueryVar('cursor', true),
-                           'updateState':  updateState});
+        if (typeof(msg) !== 'undefined') {
+            $('top_bar').setAttribute("class", klass);
+            s.innerHTML = msg;
         }
+    }
 
-        connect = function () {
-            rfb.connect($('VNC_host').value, $('VNC_port').value,
-                        $('VNC_password').value);
-        };
-        </script>
+    window.onload = function () {
+        $('cadBtn').onclick = sendCtrlAltDel;
 
-    </body>
+        $('host').value = getQueryVar('host', null);
+        $('port').value = getQueryVar('port', null);
+        $('passwd').value = getQueryVar('password', '');
+
+        rfb = new RFB({'target':      $('vnc'),
+                       'encrypt':     getQueryVar('encrypt', false),
+                       'updateState': updateState});
+    }
+    </script>
+
+</body>
+
 </html>
-

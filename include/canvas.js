@@ -39,7 +39,6 @@ function cdef(v, type, defval, desc) {
 cdef('target',         'dom',  null, 'Canvas element for VNC viewport');
 cdef('focusContainer', 'dom',  document, 'DOM element that traps keyboard input');
 cdef('focused',        'bool', true, 'Capture and send key strokes');
-cdef('scale',          'float', 1, 'VNC viewport scale factor');
 
 cdef('render_mode',    'str', '', 'Canvas rendering mode (read-only)');
 
@@ -63,24 +62,16 @@ that.get_height = function() {
 function constructor() {
     Util.Debug(">> Canvas.init");
 
-    var c;
+    var c = conf.target;
 
-    if (! conf.target) { throw("target must be set"); }
-
-    if (typeof conf.target === 'string') {
-        conf.target = window.$(conf.target);
-    }
-
-    c = conf.target;
+    if (! c) { throw("target must be set"); }
     if (! c.getContext) { throw("no getContext method"); }
 
     conf.ctx = c.getContext('2d');
     if (! conf.ctx.createImageData) { throw("no createImageData method"); }
 
     that.clear();
-
     conf.render_mode = "createImageData rendering";
-
     conf.focused = true;
 
     Util.Debug("<< Canvas.init");
@@ -234,34 +225,22 @@ function onMouseMove(e) {
 }
 
 function onKeyDown(e) {
-    //Util.Debug("keydown: " + getKeysym(e));
-    if (! conf.focused) {
-        return true;
-    }
-    if (c_keyPress) {
-        c_keyPress(getKeysym(e), 1);
-    }
+    if (! conf.focused) return true;
+    if (c_keyPress) c_keyPress(getKeysym(e), 1);
     Util.stopEvent(e);
     return false;
 }
 
 function onKeyUp(e) {
-    //Util.Debug("keyup: " + getKeysym(e));
-    if (! conf.focused) {
-        return true;
-    }
-    if (c_keyPress) {
-        c_keyPress(getKeysym(e), 0);
-    }
+    if (! conf.focused) return true;
+    if (c_keyPress) c_keyPress(getKeysym(e), 0);
     Util.stopEvent(e);
     return false;
 }
 
 function onMouseDisable(e) {
     var evt, pos;
-    if (! conf.focused) {
-        return true;
-    }
+    if (! conf.focused) return true;
     evt = (e ? e : window.event);
     pos = Util.getEventPosition(e, conf.target, conf.scale);
     /* Stop propagation if inside canvas area */

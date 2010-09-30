@@ -121,7 +121,7 @@ var that           = {},         // Public API interface
 function cdef(v, type, defval, desc) {
     Util.conf_default(conf, that, v, type, defval, desc); }
 
-cdef('target',         'str', 'VNC_canvas', 'VNC viewport rendering Canvas');
+cdef('target',         'dom', null, 'VNC viewport rendering Canvas');
 cdef('focusContainer', 'dom', document, 'Area that traps keyboard input');
 
 cdef('encrypt',        'bool', false, 'Use TLS/SSL/wss encryption');
@@ -186,7 +186,6 @@ function rQshiftBytes(len) {
 // Create the public API interface and initialize
 function constructor() {
     var i, rmode;
-    Util.Debug(">> RFB.constructor");
 
     // Create lookup tables based encoding number
     for (i=0; i < encodings.length; i+=1) {
@@ -214,13 +213,10 @@ function constructor() {
         updateState('fatal', "Native WebSockets support is required");
     }
 
-    Util.Debug("<< RFB.constructor");
     return that;  // Return the public API interface
 }
 
 function init_ws() {
-    Util.Debug(">> RFB.init_ws");
-
     var uri = "";
     if (conf.encrypt) {
         uri = "wss://";
@@ -259,8 +255,6 @@ function init_ws() {
         updateState('failed', "WebSocket error");
         Util.Debug("<< WebSocket.onerror");
     };
-
-    Util.Debug("<< RFB.init_ws");
 }
 
 init_vars = function() {
@@ -490,7 +484,6 @@ function decode_message(data) {
 }
 
 function handle_message() {
-    //Util.Debug("rQ.slice(rQi,rQi+20): " + rQ.slice(rQi,rQi+20) + " (" + rQlen() + ")");
     if (rQlen() === 0) {
         Util.Warn("handle_message called on empty receive queue");
         return;
@@ -528,8 +521,6 @@ function handle_message() {
 }
 
 recv_message = function(e) {
-    //Util.Debug(">> recv_message: " + e.data.length);
-
     try {
         decode_message(e.data);
         if (rQlen() > 0) {
@@ -551,16 +542,12 @@ recv_message = function(e) {
             updateState('failed', exc);
         }
     }
-    //Util.Debug("<< recv_message");
 };
 
 // overridable for testing
 send_array = function(arr) {
-    //Util.Debug(">> send_array: " + arr);
     encode_message(arr);
     if (ws.bufferedAmount === 0) {
-        //Util.Debug("arr: " + arr);
-        //Util.Debug("sQ: " + sQ);
         ws.send(sQ);
         sQ = "";
     } else {
@@ -569,7 +556,6 @@ send_array = function(arr) {
 };
 
 function send_string(str) {
-    //Util.Debug(">> send_string: " + str);
     send_array(str.split('').map(
         function (chr) { return chr.charCodeAt(0); } ) );
 }
@@ -630,7 +616,6 @@ function mouseButton(x, y, down, bmask) {
 }
 
 function mouseMove(x, y) {
-    //Util.Debug('>> mouseMove ' + x + "," + y);
     mouse_arr = mouse_arr.concat( pointerEvent(x, y) );
 }
 
@@ -641,13 +626,10 @@ function mouseMove(x, y) {
 
 // RFB/VNC initialisation message handler
 init_msg = function() {
-    //Util.Debug(">> init_msg [rfb_state '" + rfb_state + "']");
-
     var strlen, reason, reason_len, sversion, cversion,
         i, types, num_types, challenge, response, bpp, depth,
         big_endian, name_length;
 
-    //Util.Debug("rQ (" + rQlen() + ") " + rQ);
     switch (rfb_state) {
 
     case 'ProtocolVersion' :
@@ -861,14 +843,11 @@ init_msg = function() {
         }
         break;
     }
-    //Util.Debug("<< init_msg");
 };
 
 
 /* Normal RFB/VNC server message handler */
 normal_msg = function() {
-    //Util.Debug(">> normal_msg");
-
     var ret = true, msg_type,
         c, first_colour, num_colours, red, green, blue;
 
@@ -917,7 +896,6 @@ normal_msg = function() {
         Util.Debug("rQ.slice(0,30):" + rQ.slice(0,30));
         break;
     }
-    //Util.Debug("<< normal_msg");
     return ret;
 };
 
@@ -925,7 +903,6 @@ framebufferUpdate = function() {
     var now, hdr, fbu_rt_diff, ret = true, ctx;
 
     if (FBU.rects === 0) {
-        //Util.Debug("New FBU: rQ.slice(0,20): " + rQ.slice(0,20));
         if (rQlen() < 3) {
             if (rQi === 0) {
                 rQ.unshift(0);  // FBU msg_type
@@ -937,7 +914,6 @@ framebufferUpdate = function() {
         }
         rQi++;
         FBU.rects = rQshift16();
-        //Util.Debug("FramebufferUpdate, rects:" + FBU.rects);
         FBU.bytes = 0;
         timing.cur_fbu = 0;
         if (timing.fbu_rt_start > 0) {
@@ -1038,8 +1014,6 @@ framebufferUpdate = function() {
 //
 
 encHandlers.RAW = function display_raw() {
-    //Util.Debug(">> display_raw (" + rQlen() + " bytes)");
-
     var cur_y, cur_height; 
 
     if (FBU.lines === 0) {
@@ -1064,13 +1038,10 @@ encHandlers.RAW = function display_raw() {
         FBU.rects -= 1;
         FBU.bytes = 0;
     }
-    //Util.Debug("<< display_raw (" + rQlen() + " bytes)");
     return true;
 };
 
 encHandlers.COPYRECT = function display_copy_rect() {
-    //Util.Debug(">> display_copy_rect");
-
     var old_x, old_y;
 
     if (rQlen() < 4) {
@@ -1087,7 +1058,6 @@ encHandlers.COPYRECT = function display_copy_rect() {
 };
 
 encHandlers.HEXTILE = function display_hextile() {
-    //Util.Debug(">> display_hextile");
     var subencoding, subrects, tile, color, cur_tile,
         tile_x, x, w, tile_y, y, h, xy, s, sx, sy, wh, sw, sh;
 
@@ -1105,12 +1075,10 @@ encHandlers.HEXTILE = function display_hextile() {
             //Util.Debug("   waiting for HEXTILE subencoding byte");
             return false;
         }
-        //Util.Debug("   2 rQ length: " + rQlen() + " rQ[rQi]: " + rQ[rQi] + " rQ.slice(rQi,rQi+20): " + rQ.slice(rQi,rQi+20) + ", FBU.rects: " + FBU.rects + ", FBU.tiles: " + FBU.tiles);
         subencoding = rQ[rQi];  // Peek
         if (subencoding > 30) { // Raw
             updateState('failed',
                     "Disconnected: illegal hextile subencoding " + subencoding);
-            //Util.Debug("rQ.slice(0,30):" + rQ.slice(0,30));
             return false;
         }
         subrects = 0;
@@ -1124,7 +1092,6 @@ encHandlers.HEXTILE = function display_hextile() {
 
         /* Figure out how much we are expecting */
         if (subencoding & 0x01) { // Raw
-            //Util.Debug("   Raw subencoding");
             FBU.bytes += w * h * fb_Bpp;
         } else {
             if (subencoding & 0x02) { // Background
@@ -1136,7 +1103,6 @@ encHandlers.HEXTILE = function display_hextile() {
             if (subencoding & 0x08) { // AnySubrects
                 FBU.bytes += 1;   // Since we aren't shifting it off
                 if (rQlen() < FBU.bytes) {
-                    /* Wait for subrects byte */
                     //Util.Debug("   waiting for hextile subrects header byte");
                     return false;
                 }
@@ -1149,17 +1115,6 @@ encHandlers.HEXTILE = function display_hextile() {
             }
         }
 
-        /*
-        Util.Debug("   tile:" + cur_tile + "/" + (FBU.total_tiles - 1) +
-              " (" + tile_x + "," + tile_y + ")" +
-              " [" + x + "," + y + "]@" + w + "x" + h +
-              ", subenc:" + subencoding +
-              "(last: " + FBU.lastsubencoding + "), subrects:" +
-              subrects +
-              ", rQlen():" + rQlen() + ", FBU.bytes:" + FBU.bytes +
-              " last:" + rQ.slice(FBU.bytes-10, FBU.bytes) +
-              " next:" + rQ.slice(FBU.bytes-1, FBU.bytes+10));
-        */
         if (rQlen() < FBU.bytes) {
             //Util.Debug("   waiting for " +
             //           (FBU.bytes - rQlen()) + " hextile bytes");
@@ -1224,8 +1179,6 @@ encHandlers.HEXTILE = function display_hextile() {
     if (FBU.tiles === 0) {
         FBU.rects -= 1;
     }
-
-    //Util.Debug("<< display_hextile");
     return true;
 };
 
@@ -1251,7 +1204,6 @@ encHandlers.DesktopSize = function set_desktopsize() {
  */
 
 pixelFormat = function() {
-    //Util.Debug(">> pixelFormat");
     var arr;
     arr = [0];     // msg-type
     arr.push8(0);  // padding
@@ -1273,12 +1225,10 @@ pixelFormat = function() {
     arr.push8(0);     // padding
     arr.push8(0);     // padding
     arr.push8(0);     // padding
-    //Util.Debug("<< pixelFormat");
     return arr;
 };
 
 clientEncodings = function() {
-    //Util.Debug(">> clientEncodings");
     var arr, i, encList = [];
 
     for (i=0; i<encodings.length; i += 1) {
@@ -1286,7 +1236,6 @@ clientEncodings = function() {
             (! conf.local_cursor)) {
             Util.Debug("Skipping Cursor pseudo-encoding");
         } else {
-            //Util.Debug("Adding encoding: " + encodings[i][0]);
             encList.push(encodings[i][1]);
         }
     }
@@ -1298,12 +1247,10 @@ clientEncodings = function() {
     for (i=0; i < encList.length; i += 1) {
         arr.push32(encList[i]);
     }
-    //Util.Debug("<< clientEncodings: " + arr);
     return arr;
 };
 
 fbUpdateRequest = function(incremental, x, y, xw, yw) {
-    //Util.Debug(">> fbUpdateRequest");
     if (!x) { x = 0; }
     if (!y) { y = 0; }
     if (!xw) { xw = fb_width; }
@@ -1315,35 +1262,28 @@ fbUpdateRequest = function(incremental, x, y, xw, yw) {
     arr.push16(y);
     arr.push16(xw);
     arr.push16(yw);
-    //Util.Debug("<< fbUpdateRequest");
     return arr;
 };
 
 keyEvent = function(keysym, down) {
-    //Util.Debug(">> keyEvent, keysym: " + keysym + ", down: " + down);
     var arr;
     arr = [4];  // msg-type
     arr.push8(down);
     arr.push16(0);
     arr.push32(keysym);
-    //Util.Debug("<< keyEvent");
     return arr;
 };
 
 pointerEvent = function(x, y) {
-    //Util.Debug(">> pointerEvent, x,y: " + x + "," + y +
-    //           " , mask: " + mouse_buttonMask);
     var arr;
     arr = [5];  // msg-type
     arr.push8(mouse_buttonMask);
     arr.push16(x);
     arr.push16(y);
-    //Util.Debug("<< pointerEvent");
     return arr;
 };
 
 clientCutText = function(text) {
-    //Util.Debug(">> clientCutText");
     var arr, i, n;
     arr = [6];     // msg-type
     arr.push8(0);  // padding
@@ -1354,7 +1294,6 @@ clientCutText = function(text) {
     for (i=0; i < n; i+=1) {
         arr.push(text.charCodeAt(i));
     }
-    //Util.Debug("<< clientCutText:" + arr);
     return arr;
 };
 
@@ -1365,8 +1304,6 @@ clientCutText = function(text) {
 //
 
 that.connect = function(host, port, password) {
-    //Util.Debug(">> connect");
-
     rfb_host       = host;
     rfb_port       = port;
     rfb_password   = (password !== undefined)   ? password : "";
@@ -1377,14 +1314,10 @@ that.connect = function(host, port, password) {
     }
 
     updateState('connect');
-    //Util.Debug("<< connect");
-
 };
 
 that.disconnect = function() {
-    //Util.Debug(">> disconnect");
     updateState('disconnect', 'Disconnecting');
-    //Util.Debug("<< disconnect");
 };
 
 that.sendPassword = function(passwd) {
@@ -1426,9 +1359,7 @@ that.sendKey = function(code, down) {
 
 that.clipboardPasteFrom = function(text) {
     if (rfb_state !== "normal") { return; }
-    //Util.Debug(">> clipboardPasteFrom: " + text.substr(0,40) + "...");
     send_array(clientCutText(text));
-    //Util.Debug("<< clipboardPasteFrom");
 };
 
 that.testMode = function(override_send_array) {
