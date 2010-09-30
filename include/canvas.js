@@ -36,42 +36,12 @@ function cdef(v, type, defval, desc) {
     Util.conf_default(conf, that, v, type, defval, desc); }
 
 // Capability settings, default can be overridden
-cdef('prefer_js',      'raw', null, 'Prefer Javascript over canvas methods');
-
 cdef('target',         'dom',  null, 'Canvas element for VNC viewport');
 cdef('focusContainer', 'dom',  document, 'DOM element that traps keyboard input');
-cdef('true_color',     'bool', true, 'Request true color pixel data');
 cdef('focused',        'bool', true, 'Capture and send key strokes');
-cdef('colourMap',      'raw',  [], 'Colour map array (not true color)');
 cdef('scale',          'float', 1, 'VNC viewport scale factor');
 
 cdef('render_mode',    'str', '', 'Canvas rendering mode (read-only)');
-
-// Override some specific getters/setters
-that.set_prefer_js = function(val) {
-    if (val && c_forceCanvas) {
-        Util.Warn("Preferring Javascript to Canvas ops is not supported");
-        return false;
-    }
-    conf.prefer_js = val;
-    return true;
-};
-
-that.get_colourMap = function(idx) {
-    if (typeof idx === 'undefined') {
-        return conf.colourMap;
-    } else {
-        return conf.colourMap[idx];
-    }
-};
-
-that.set_colourMap = function(val, idx) {
-    if (typeof idx === 'undefined') {
-        conf.colourMap = val;
-    } else {
-        conf.colourMap[idx] = val;
-    }
-};
 
 that.set_render_mode = function () { throw("render_mode is read-only"); };
 
@@ -93,8 +63,7 @@ that.get_height = function() {
 function constructor() {
     Util.Debug(">> Canvas.init");
 
-    var c, ctx, imgTest, tval, i, curDat, curSave,
-        has_imageData = false, UE = Util.Engine;
+    var c;
 
     if (! conf.target) { throw("target must be set"); }
 
@@ -103,63 +72,14 @@ function constructor() {
     }
 
     c = conf.target;
-
     if (! c.getContext) { throw("no getContext method"); }
 
-    if (! conf.ctx) { conf.ctx = c.getContext('2d'); }
-    ctx = conf.ctx;
-
-    if (UE.gecko) { Util.Debug("Browser: gecko " + UE.gecko); }
-    if (UE.webkit) { Util.Debug("Browser: webkit " + UE.webkit); }
-    if (UE.trident) { Util.Debug("Browser: webkit " + UE.trident); }
-    if (UE.presto) { Util.Debug("Browser: webkit " + UE.presto); }
+    conf.ctx = c.getContext('2d');
+    if (! conf.ctx.createImageData) { throw("no createImageData method"); }
 
     that.clear();
 
-    /*
-     * Determine browser Canvas feature support
-     * and select fastest rendering methods
-     */
-    tval = 0;
-    try {
-        imgTest = ctx.getImageData(0, 0, 1,1);
-        imgTest.data[0] = 123;
-        imgTest.data[3] = 255;
-        ctx.putImageData(imgTest, 0, 0);
-        tval = ctx.getImageData(0, 0, 1, 1).data[0];
-        if (tval === 123) {
-            has_imageData = true;
-        }
-    } catch (exc1) {}
-
-    if (has_imageData) {
-        Util.Info("Canvas supports imageData");
-        c_forceCanvas = false;
-        if (ctx.createImageData) {
-            // If it's there, it's faster
-            Util.Info("Using Canvas createImageData");
-            conf.render_mode = "createImageData rendering";
-            that.imageData = that.imageDataCreate;
-        } else if (ctx.getImageData) {
-            // I think this is mostly just Opera
-            Util.Info("Using Canvas getImageData");
-            conf.render_mode = "getImageData rendering";
-            that.imageData = that.imageDataGet;
-        }
-        Util.Info("Prefering javascript operations");
-        if (conf.prefer_js === null) {
-            conf.prefer_js = true;
-        }
-        that.rgbxImage = that.rgbxImageData;
-        that.cmapImage = that.cmapImageData;
-    } else {
-        Util.Warn("Canvas lacks imageData, using fillRect (slow)");
-        conf.render_mode = "fillRect rendering (slow)";
-        c_forceCanvas = true;
-        conf.prefer_js = false;
-        that.rgbxImage = that.rgbxImageFill;
-        that.cmapImage = that.cmapImageFill;
-    }
+    conf.render_mode = "createImageData rendering";
 
     conf.focused = true;
 
@@ -387,48 +307,14 @@ that.start = function(keyPressFunc, mouseButtonFunc, mouseMoveFunc) {
     Util.Debug("<< Canvas.start");
 };
 
-that.rescale = function(factor) {
-    var c, tp, x, y, 
-        properties = ['transform', 'WebkitTransform', 'MozTransform', null];
-    c = conf.target;
-    tp = properties.shift();
-    while (tp) {
-        if (typeof c.style[tp] !== 'undefined') {
-            break;
-        }
-        tp = properties.shift();
-    }
-
-    if (tp === null) {
-        Util.Debug("No scaling support");
-        return;
-    }
-
-    if (conf.scale === factor) {
-        //Util.Debug("Canvas already scaled to '" + factor + "'");
-        return;
-    }
-
-    conf.scale = factor;
-    x = c.width - c.width * factor;
-    y = c.height - c.height * factor;
-    c.style[tp] = "scale(" + conf.scale + ") translate(-" + x + "px, -" + y + "px)";
-};
-
-that.resize = function(width, height, true_color) {
+that.resize = function(width, height) {
     var c = conf.target;
-
-    if (typeof true_color !== "undefined") {
-        conf.true_color = true_color;
-    }
 
     c.width = width;
     c.height = height;
 
     c_width  = c.offsetWidth;
     c_height = c.offsetHeight;
-
-    that.rescale(conf.scale);
 };
 
 that.clear = function() {
@@ -451,30 +337,20 @@ that.stop = function() {
     Util.removeEvent(conf.focusContainer.body, 'contextmenu', onMouseDisable);
 };
 
-setFillColor = function(color) {
-    var rgb, newStyle;
-    if (conf.true_color) {
-        rgb = color;
-    } else {
-        rgb = conf.colourMap[color[0]];
-    }
+fillRect = function(x, y, width, height, color) {
+    var newStyle, c = color;
     if (newStyle !== c_prevStyle) {
-        newStyle = "rgb(" + rgb[0] + "," + rgb[1] + "," + rgb[2] + ")";
+        newStyle = "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
         conf.ctx.fillStyle = newStyle;
         c_prevStyle = newStyle;
     }
-};
-that.setFillColor = setFillColor;
-
-fillRect = function(x, y, width, height, color) {
-    setFillColor(color);
     conf.ctx.fillRect(x, y, width, height);
 };
 that.fillRect = fillRect;
 
 that.copyImage = function(old_x, old_y, new_x, new_y, width, height) {
     conf.ctx.drawImage(conf.target, old_x, old_y, width, height,
-                                       new_x, new_y, width, height);
+                                    new_x, new_y, width, height);
 };
 
 /*
@@ -485,77 +361,52 @@ that.copyImage = function(old_x, old_y, new_x, new_y, width, height) {
  *   gecko, Javascript array handling is much slower.
  */
 that.getTile = function(x, y, width, height, color) {
-    var img, data, p, rgb, red, green, blue, j, i;
+    var img, data, p, red, green, blue, j, i;
     img = {'x': x, 'y': y, 'width': width, 'height': height,
            'data': []};
-    if (conf.prefer_js) {
-        data = img.data;
-        if (conf.true_color) {
-            rgb = color;
-        } else {
-            rgb = conf.colourMap[color[0]];
-        }
-        red = rgb[0];
-        green = rgb[1];
-        blue = rgb[2];
-        for (j = 0; j < height; j += 1) {
-            for (i = 0; i < width; i += 1) {
-                p = (i + (j * width) ) * 4;
-                data[p + 0] = red;
-                data[p + 1] = green;
-                data[p + 2] = blue;
-                //data[p + 3] = 255; // Set Alpha
-            }   
-        } 
-    } else {
-        fillRect(x, y, width, height, color);
-    }
+    data = img.data;
+    red = color[0];
+    green = color[1];
+    blue = color[2];
+    for (j = 0; j < height; j += 1) {
+        for (i = 0; i < width; i += 1) {
+            p = (i + (j * width) ) * 4;
+            data[p + 0] = red;
+            data[p + 1] = green;
+            data[p + 2] = blue;
+            //data[p + 3] = 255; // Set Alpha
+        }   
+    } 
     return img;
 };
 
 that.setSubTile = function(img, x, y, w, h, color) {
-    var data, p, rgb, red, green, blue, width, j, i;
-    if (conf.prefer_js) {
-        data = img.data;
-        width = img.width;
-        if (conf.true_color) {
-            rgb = color;
-        } else {
-            rgb = conf.colourMap[color[0]];
-        }
-        red = rgb[0];
-        green = rgb[1];
-        blue = rgb[2];
-        for (j = 0; j < h; j += 1) {
-            for (i = 0; i < w; i += 1) {
-                p = (x + i + ((y + j) * width) ) * 4;
-                data[p + 0] = red;
-                data[p + 1] = green;
-                data[p + 2] = blue;
-                //img.data[p + 3] = 255; // Set Alpha
-            }   
-        } 
-    } else {
-        fillRect(img.x + x, img.y + y, w, h, color);
-    }
+    var data, p, red, green, blue, width, j, i;
+    data = img.data;
+    width = img.width;
+    red = color[0];
+    green = color[1];
+    blue = color[2];
+    for (j = 0; j < h; j += 1) {
+        for (i = 0; i < w; i += 1) {
+            p = (x + i + ((y + j) * width) ) * 4;
+            data[p + 0] = red;
+            data[p + 1] = green;
+            data[p + 2] = blue;
+            //img.data[p + 3] = 255; // Set Alpha
+        }   
+    } 
 };
 
 that.putTile = function(img) {
-    if (conf.prefer_js) {
-        that.rgbxImage(img.x, img.y, img.width, img.height, img.data, 0);
-    } else {
-        // No-op, under gecko already done by setSubTile
-    }
+    that.blitImage(img.x, img.y, img.width, img.height, img.data, 0);
 };
 
-that.imageDataGet = function(width, height) {
-    return conf.ctx.getImageData(0, 0, width, height);
-};
-that.imageDataCreate = function(width, height) {
+that.imageData = function(width, height) {
     return conf.ctx.createImageData(width, height);
 };
 
-that.rgbxImageData = function(x, y, width, height, arr, offset) {
+that.blitImage = function(x, y, width, height, arr, offset) {
     var img, i, j, data;
     img = that.imageData(width, height);
     data = img.data;
@@ -566,62 +417,6 @@ that.rgbxImageData = function(x, y, width, height, arr, offset) {
         data[i + 3] = 255; // Set Alpha
     }
     conf.ctx.putImageData(img, x, y);
-};
-
-// really slow fallback if we don't have imageData
-that.rgbxImageFill = function(x, y, width, height, arr, offset) {
-    var i, j, sx = 0, sy = 0;
-    for (i=0, j=offset; i < (width * height); i+=1, j+=4) {
-        fillRect(x+sx, y+sy, 1, 1, [arr[j+0], arr[j+1], arr[j+2]]);
-        sx += 1;
-        if ((sx % width) === 0) {
-            sx = 0;
-            sy += 1;
-        }
-    }
-};
-
-that.cmapImageData = function(x, y, width, height, arr, offset) {
-    var img, i, j, data, rgb, cmap;
-    img = that.imageData(width, height);
-    data = img.data;
-    cmap = conf.colourMap;
-    for (i=0, j=offset; i < (width * height * 4); i+=4, j+=1) {
-        rgb = cmap[arr[j]];
-        data[i + 0] = rgb[0];
-        data[i + 1] = rgb[1];
-        data[i + 2] = rgb[2];
-        data[i + 3] = 255; // Set Alpha
-    }
-    conf.ctx.putImageData(img, x, y);
-};
-
-that.cmapImageFill = function(x, y, width, height, arr, offset) {
-    var i, j, sx = 0, sy = 0, cmap;
-    cmap = conf.colourMap;
-    for (i=0, j=offset; i < (width * height); i+=1, j+=1) {
-        fillRect(x+sx, y+sy, 1, 1, [arr[j]]);
-        sx += 1;
-        if ((sx % width) === 0) {
-            sx = 0;
-            sy += 1;
-        }
-    }
-};
-
-
-that.blitImage = function(x, y, width, height, arr, offset) {
-    if (conf.true_color) {
-        that.rgbxImage(x, y, width, height, arr, offset);
-    } else {
-        that.cmapImage(x, y, width, height, arr, offset);
-    }
-};
-
-that.blitStringImage = function(str, x, y) {
-    var img = new Image();
-    img.onload = function () { conf.ctx.drawImage(img, x, y); };
-    img.src = str;
 };
 
 return constructor();  // Return the public API interface

@@ -8,7 +8,7 @@
 
 "use strict";
 /*jslint white: false, browser: true, bitwise: false, plusplus: false */
-/*global window, WebSocket, Util, Canvas, VNC_native_ws, DES */
+/*global window, WebSocket, Util, Canvas, DES */
 
 
 function RFB(conf) {
@@ -125,7 +125,6 @@ cdef('target',         'str', 'VNC_canvas', 'VNC viewport rendering Canvas');
 cdef('focusContainer', 'dom', document, 'Area that traps keyboard input');
 
 cdef('encrypt',        'bool', false, 'Use TLS/SSL/wss encryption');
-cdef('true_color',     'bool', true,  'Request true color pixel data');
 
 cdef('connectTimeout',    'int', 2,    'Time (s) to wait for connection');
 cdef('disconnectTimeout', 'int', 3,    'Time (s) to wait for disconnection');
@@ -208,20 +207,11 @@ function constructor() {
     init_vars();
 
     /* Check web-socket-js if no builtin WebSocket support */
-    if (VNC_native_ws) {
+    if (window.WebSocket) {
         Util.Info("Using native WebSockets");
         updateState('loaded', 'noVNC ready: native WebSockets, ' + rmode);
     } else {
-        Util.Warn("Using web-socket-js flash bridge");
-        if ((! Util.Flash) ||
-            (Util.Flash.version < 9)) {
-            updateState('fatal', "WebSockets or Adobe Flash is required");
-        } else if (document.location.href.substr(0, 7) === "file://") {
-            updateState('fatal',
-                    "'file://' URL is incompatible with Adobe Flash");
-        } else {
-            updateState('loaded', 'noVNC ready: WebSockets emulation, ' + rmode);
-        }
+        updateState('fatal', "Native WebSockets support is required");
     }
 
     Util.Debug("<< RFB.constructor");
@@ -655,7 +645,7 @@ init_msg = function() {
 
     var strlen, reason, reason_len, sversion, cversion,
         i, types, num_types, challenge, response, bpp, depth,
-        big_endian, true_color, name_length;
+        big_endian, name_length;
 
     //Util.Debug("rQ (" + rQlen() + ") " + rQ);
     switch (rfb_state) {
@@ -848,16 +838,11 @@ init_msg = function() {
         name_length   = rQshift32();
         fb_name = rQshiftStr(name_length);
 
-        canvas.resize(fb_width, fb_height, conf.true_color);
+        canvas.resize(fb_width, fb_height);
         canvas.start(keyPress, mouseButton, mouseMove);
 
-        if (conf.true_color) {
-            fb_Bpp           = 4;
-            fb_depth         = 3;
-        } else {
-            fb_Bpp           = 1;
-            fb_depth         = 1;
-        }
+        fb_Bpp           = 4;
+        fb_depth         = 3;
 
         response = pixelFormat();
         response = response.concat(clientEncodings());
@@ -899,21 +884,7 @@ normal_msg = function() {
         ret = framebufferUpdate(); // false means need more data
         break;
     case 1:  // SetColourMapEntries
-        Util.Debug("SetColourMapEntries");
-        rQi++;  // Padding
-        first_colour = rQshift16(); // First colour
-        num_colours = rQshift16();
-        for (c=0; c < num_colours; c+=1) { 
-            red = rQshift16();
-            //Util.Debug("red before: " + red);
-            red = parseInt(red / 256, 10);
-            //Util.Debug("red after: " + red);
-            green = parseInt(rQshift16() / 256, 10);
-            blue = parseInt(rQshift16() / 256, 10);
-            canvas.set_colourMap([red, green, blue], first_colour + c);
-        }
-        Util.Info("Registered " + num_colours + " colourMap entries");
-        //Util.Debug("colourMap: " + canvas.get_colourMap());
+        updateState('failed', "Error: got SetColourMapEntries");
         break;
     case 2:  // Bell
         Util.Warn("Bell (unsupported)");
@@ -1115,43 +1086,6 @@ encHandlers.COPYRECT = function display_copy_rect() {
     return true;
 };
 
-encHandlers.RRE = function display_rre() {
-    //Util.Debug(">> display_rre (" + rQlen() + " bytes)");
-    var color, x, y, width, height, chunk;
-
-    if (FBU.subrects === 0) {
-        if (rQlen() < 4 + fb_Bpp) {
-            //Util.Debug("   waiting for " +
-            //           (4 + fb_Bpp - rQlen()) + " RRE bytes");
-            return false;
-        }
-        FBU.subrects = rQshift32();
-        color = rQshiftBytes(fb_Bpp); // Background
-        canvas.fillRect(FBU.x, FBU.y, FBU.width, FBU.height, color);
-    }
-    while ((FBU.subrects > 0) && (rQlen() >= (fb_Bpp + 8))) {
-        color = rQshiftBytes(fb_Bpp);
-        x = rQshift16();
-        y = rQshift16();
-        width = rQshift16();
-        height = rQshift16();
-        canvas.fillRect(FBU.x + x, FBU.y + y, width, height, color);
-        FBU.subrects -= 1;
-    }
-    //Util.Debug("   display_rre: rects: " + FBU.rects +
-    //           ", FBU.subrects: " + FBU.subrects);
-
-    if (FBU.subrects > 0) {
-        chunk = Math.min(rre_chunk_sz, FBU.subrects);
-        FBU.bytes = (fb_Bpp + 8) * chunk;
-    } else {
-        FBU.rects -= 1;
-        FBU.bytes = 0;
-    }
-    //Util.Debug("<< display_rre, FBU.bytes: " + FBU.bytes);
-    return true;
-};
-
 encHandlers.HEXTILE = function display_hextile() {
     //Util.Debug(">> display_hextile");
     var subencoding, subrects, tile, color, cur_tile,
@@ -1327,7 +1261,7 @@ pixelFormat = function() {
     arr.push8(fb_Bpp * 8); // bits-per-pixel
     arr.push8(fb_depth * 8); // depth
     arr.push8(0);  // little-endian
-    arr.push8(conf.true_color ? 1 : 0);  // true-color
+    arr.push8(1);  // true-color
 
     arr.push16(255);  // red-max
     arr.push16(255);  // green-max
