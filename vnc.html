@@ -1,7 +1,7 @@
 <html>
 
 <!-- 
-noVNC Example: Automatically connect on page load.
+Diet noVNC: noVNC without the sugar.
 Copyright (C) 2010 Joel Martin
 Licensed under LGPL-3 (see LICENSE.txt)
 
@@ -10,19 +10,17 @@ Connect parameters are provided in query string:
 -->
 <head>
     <title>VNC Client</title>
-    <script src="include/util.js"></script>
-    <script src="include/des.js"></script>
-    <script src="include/canvas.js"></script>
-    <script src="include/rfb.js"></script>
+    <!--<script src="vnc.js"></script>-->
+    <script src="vnc-comp.js"></script>
 
     <style>
-        body { margin: 10; }
+        body { margin: 10px; }
         #controls { overflow: hidden; }
         #controls ul { list-style: none; margin: 0; padding: 0; }
         #controls li { float: left; margin-right: 15px; }
         #controls input { width: 80px; }
         #screen  { display: table; }
-        #top_bar { margin-top: 5; }
+        #top_bar { margin-top: 5px; }
         .sNormal { background: #eee; }
         .sError  { background: #f44; }
         .sWarn   { background: #ff4; }
@@ -31,8 +29,8 @@ Connect parameters are provided in query string:
 
 <body>
     <div id="controls"> <ul>
-        <li>Host: <input id="host"></li>
-        <li>Port: <input id="port"></li>
+        <li>Host: <input id="host" type="text"></li>
+        <li>Port: <input id="port" type="text"></li>
         <li>Password: <input id="passwd" type="password"></li>
         <li><input id="cBtn" type="button" value="Loading" disabled></li>
     </ul> </div>
@@ -53,7 +51,7 @@ Connect parameters are provided in query string:
 
     <script>
     /*jslint white: false */
-    /*global window, $, Util, RFB, */
+    /*global window, RFB, */
     "use strict";
 
     var rfb;
@@ -63,10 +61,10 @@ Connect parameters are provided in query string:
         var re = new RegExp('[?][^#]*' + name + '=([^&#]*)');
         if (typeof defVal === 'undefined') { defVal = null; }
         return (document.location.href.match(re) || ['',defVal])[1];
-    };
+    }
 
     // Simple DOM selector by ID
-    $ = function (id) {
+    var $ = function (id) {
         return document.getElementById ? document.getElementById(id) :
                document.all ? document.all[id] :
                document.layers ? document.layers[id] : undefined;
@@ -74,7 +72,7 @@ Connect parameters are provided in query string:
 
     function connect() {
         rfb.connect($('host').value, $('port').value, $('passwd').value);
-    };
+    }
     function setPassword() {
         rfb.sendPassword($('new_passwd').value);
         return false;
@@ -128,7 +126,7 @@ Connect parameters are provided in query string:
         rfb = new RFB({'target':      $('vnc'),
                        'encrypt':     getQueryVar('encrypt', false),
                        'updateState': updateState});
-    }
+    };
     </script>
 
 </body>

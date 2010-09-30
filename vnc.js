@@ -1,5 +1,5 @@
 /*
- * noVNC: HTML5 VNC client
+ * Diet noVNC: noVNC (HTML5 VNC client) but without the sugar.
  * Copyright (C) 2010 Joel Martin
  * Licensed under LGPL-3 (see LICENSE.txt)
  *
@@ -7,10 +7,450 @@
  */
 
 "use strict";
-/*jslint white: false, browser: true, bitwise: false, plusplus: false */
-/*global window, WebSocket, Util, Canvas, DES */
+/*jslint browser: true, bitwise: false, white: false, plusplus: false */
+/*global window, console, document, navigator, WebSocket, ActiveXObject, DES */
+
+// Globals defined here
+var log_level, debug, info, warn, error, stub, Features, Engine;
+
+// -------------------------------------------------------------------
+// Utilities
+// -------------------------------------------------------------------
+
+// Make arrays quack
+Array.prototype.push8 = function (num) {
+    this.push(num & 0xFF);
+};
+
+Array.prototype.push16 = function (num) {
+    this.push((num >> 8) & 0xFF,
+              (num     ) & 0xFF  );
+};
+Array.prototype.push32 = function (num) {
+    this.push((num >> 24) & 0xFF,
+              (num >> 16) & 0xFF,
+              (num >>  8) & 0xFF,
+              (num      ) & 0xFF  );
+};
+
+// Logging/debug routines
+debug = info = warn = error = stub = function(m) {};
+log_level =  (document.location.href.match(
+                    /logging=([A-Za-z0-9\._\-]*)/) ||
+                    ['', 'warn'])[1];
+if (typeof window.console === "undefined") {
+    window.console = {'log': stub, 'warn': stub, 'error': stub};
+}
+
+switch (log_level) {
+    case 'debug': debug = function (msg) { console.log(msg); };
+    case 'info':  info  = function (msg) { console.log(msg); };
+    case 'warn':  warn  = function (msg) { console.warn(msg); };
+    case 'error': error = function (msg) { console.error(msg); };
+    case 'none':  break;
+    default:      throw("invalid logging type '" + log_level + "'");
+}
+
+// Set browser engine versions. Based on mootools.
+Features = {xpath: !!(document.evaluate),
+            air: !!(window.runtime),
+            query: !!(document.querySelector)};
+
+Engine = {
+    'presto': (function() {
+            return (!window.opera) ? false : ((arguments.callee.caller) ? 960 : ((document.getElementsByClassName) ? 950 : 925)); }()),
+    'trident': (function() {
+            return (!window.ActiveXObject) ? false : ((window.XMLHttpRequest) ? ((document.querySelectorAll) ? 6 : 5) : 4); }()),
+    'webkit': (function() {
+            try { return (navigator.taintEnabled) ? false : ((Features.xpath) ? ((Features.query) ? 525 : 420) : 419); } catch (e) { return false; } }()),
+    //'webkit': (function() {
+    //        return ((typeof navigator.taintEnabled !== "unknown") && navigator.taintEnabled) ? false : ((Features.xpath) ? ((Features.query) ? 525 : 420) : 419); }()),
+    'gecko': (function() {
+            return (!document.getBoxObjectFor && window.mozInnerScreenX == null) ? false : ((document.getElementsByClassName) ? 19 : 18); }())
+};
 
 
+// -------------------------------------------------------------------
+// VNC Canvas drawing area
+// -------------------------------------------------------------------
+function Canvas(conf) {
+
+var that           = {},         // Public API interface
+
+    // Pre-declare functions used before definitions (jslint)jslint
+    setFillColor, fillRect,
+
+    // Private Canvas namespace variables
+    c_forceCanvas = false,
+
+    c_width        = 0,
+    c_height       = 0,
+
+    c_prevStyle    = "",
+
+    c_keyPress     = null,
+    c_mouseButton  = null,
+    c_mouseMove    = null;
+
+
+// Configuration settings
+that.conf = conf || {}; // Make it public
+function cdef(v, defval, desc) {
+    if (typeof conf[v] === 'undefined') { conf[v] = defval; } }
+cdef('target',         null,     'Canvas element for VNC viewport');
+cdef('focusContainer', document, 'DOM element that traps keyboard input');
+cdef('focused',        true,     'Capture and send key strokes');
+cdef('render_mode',    '',       'Canvas rendering mode (read-only)');
+
+//
+// Private functions
+//
+
+// Create the public API interface
+function constructor() {
+    debug(">> Canvas.init");
+
+    var c = conf.target;
+
+    if (! c) { throw("target must be set"); }
+    if (! c.getContext) { throw("no getContext method"); }
+
+    conf.ctx = c.getContext('2d');
+    if (! conf.ctx.createImageData) { throw("no createImageData method"); }
+
+    that.clear();
+    conf.render_mode = "createImageData rendering";
+    conf.focused = true;
+
+    debug("<< Canvas.init");
+    return that ;
+}
+
+/* Translate DOM key event to keysym value */
+function getKeysym(e) {
+    var evt = (e ? e : window.event), keysym, map1, map2, map3;
+
+    map1 = {
+        8  : 0x08, 9  : 0x09, 13 : 0x0D, 27 : 0x1B, 45 : 0x63, 46 : 0xFF,
+        36 : 0x50, 35 : 0x57, 33 : 0x55, 34 : 0x56, 37 : 0x51, 38 : 0x52,
+        39 : 0x53, 40 : 0x54, 112: 0xBE, 113: 0xBF, 114: 0xC0, 115: 0xC1,
+        116: 0xC2, 117: 0xC3, 118: 0xC4, 119: 0xC5, 120: 0xC6, 121: 0xC7,
+        122: 0xC8, 123: 0xC9, 16 : 0xE1, 17 : 0xE3, 18 : 0xE9 };
+
+    map2 = {
+        186: 59, 187: 61, 188: 44, 189: 45, 190: 46, 191: 47,
+        192: 96, 219: 91, 220: 92, 221: 93, 222: 39 };
+    if (Engine.gecko) { map2[109] = 45; }
+
+    map3 = {
+        48: 41, 49: 33, 50: 64, 51: 35, 52: 36, 53: 37, 54: 94,
+        55: 38, 56: 42, 57: 40, 59: 58, 61: 43, 44: 60, 45: 95,
+        46: 62, 47: 63, 96: 126, 91: 123, 92: 124, 93: 125, 39: 34 };
+
+    keysym = evt.keyCode;
+
+    /* Remap modifier and special keys */
+    if (keysym in map1) { keysym = 0xFF00 + map1[keysym]; }
+
+    /* Remap symbols */
+    if (keysym in map2) { keysym = map2[keysym]; }
+    
+    /* Remap shifted and unshifted keys */
+    if (!!evt.shiftKey) {
+        if (keysym in map3) { keysym = map3[keysym]; }
+    } else if ((keysym >= 65) && (keysym <=90)) {
+        /* Remap unshifted A-Z */
+        keysym += 32;
+    } 
+
+    return keysym;
+}
+
+// Cross-browser mouse event position within DOM element
+function getEventPosition(e, obj) {
+    var evt, docX, docY, x = 0, y = 0;
+    evt = (e ? e : window.event);
+    if (evt.pageX || evt.pageY) {
+        docX = evt.pageX;
+        docY = evt.pageY;
+    } else if (evt.clientX || evt.clientY) {
+        docX = evt.clientX + document.body.scrollLeft +
+            document.documentElement.scrollLeft;
+        docY = evt.clientY + document.body.scrollTop +
+            document.documentElement.scrollTop;
+    }
+    if (obj.offsetParent) {
+        do {
+            x += obj.offsetLeft;
+            y += obj.offsetTop;
+            obj = obj.offsetParent;
+        } while (obj);
+    }
+    return {'x': (docX - x), 'y': (docY - y)};
+}
+
+
+// Event registration. Based on: http://www.scottandrew.com/weblog/articles/cbs-events
+function addEvent(o, e, fn){
+    var r = true;
+    if      (o.attachEvent)     { r = o.attachEvent("on"+e, fn);     }
+    else if (o.addEventListener){ o.addEventListener(e, fn, false);  }
+    else                        { throw("Handler could not be attached"); }
+    return r;
+}
+
+function removeEvent(o, e, fn){
+    var r = true;
+    if (o.detachEvent)              { r = o.detachEvent("on"+e, fn); }
+    else if (o.removeEventListener) { o.removeEventListener(e, fn, false); }
+    else                            { throw("Handler could not be removed"); }
+    return r;
+}
+
+function stopEvent(e) {
+    if (e.stopPropagation) { e.stopPropagation(); }
+    else                   { e.cancelBubble = true; }
+
+    if (e.preventDefault)  { e.preventDefault(); }
+    else                   { e.returnValue = false; }
+}
+
+
+function onMouseButton(e, down) {
+    var evt, pos, bmask;
+    if (! conf.focused) {
+        return true;
+    }
+    evt = (e ? e : window.event);
+    pos = getEventPosition(e, conf.target);
+    bmask = 1 << evt.button;
+    //debug('mouse ' + pos.x + "," + pos.y + " down: " + down + " bmask: " + bmask);
+    if (c_mouseButton) {
+        c_mouseButton(pos.x, pos.y, down, bmask);
+    }
+    stopEvent(e);
+    return false;
+}
+
+function onMouseDown(e) {
+    onMouseButton(e, 1);
+}
+
+function onMouseUp(e) {
+    onMouseButton(e, 0);
+}
+
+function onMouseWheel(e) {
+    var evt, pos, bmask, wheelData;
+    evt = (e ? e : window.event);
+    pos = getEventPosition(e, conf.target);
+    wheelData = evt.detail ? evt.detail * -1 : evt.wheelDelta / 40;
+    if (wheelData > 0) {
+        bmask = 1 << 3;
+    } else {
+        bmask = 1 << 4;
+    }
+    //debug('mouse scroll by ' + wheelData + ':' + pos.x + "," + pos.y);
+    if (c_mouseButton) {
+        c_mouseButton(pos.x, pos.y, 1, bmask);
+        c_mouseButton(pos.x, pos.y, 0, bmask);
+    }
+    stopEvent(e);
+    return false;
+}
+
+function onMouseMove(e) {
+    var evt, pos;
+    evt = (e ? e : window.event);
+    pos = getEventPosition(e, conf.target);
+    //debug('mouse ' + evt.which + '/' + evt.button + ' up:' + pos.x + "," + pos.y);
+    if (c_mouseMove) {
+        c_mouseMove(pos.x, pos.y);
+    }
+}
+
+function onKeyDown(e) {
+    if (! conf.focused) { return true; }
+    if (c_keyPress)     { c_keyPress(getKeysym(e), 1); }
+    stopEvent(e);
+    return false;
+}
+
+function onKeyUp(e) {
+    if (! conf.focused) { return true; }
+    if (c_keyPress)     { c_keyPress(getKeysym(e), 0); }
+    stopEvent(e);
+    return false;
+}
+
+function onMouseDisable(e) {
+    var evt, pos;
+    if (! conf.focused) { return true; }
+    evt = (e ? e : window.event);
+    pos = getEventPosition(e, conf.target);
+    /* Stop propagation if inside canvas area */
+    if ((pos.x >= 0) && (pos.y >= 0) &&
+        (pos.x < c_width) && (pos.y < c_height)) {
+        //debug("mouse event disabled");
+        stopEvent(e);
+        return false;
+    }
+    //debug("mouse event not disabled");
+    return true;
+}
+
+//
+// Public API interface functions
+//
+
+that.getContext = function () {
+    return conf.ctx;
+};
+
+that.start = function(keyPressFunc, mouseButtonFunc, mouseMoveFunc) {
+    var c;
+    debug(">> Canvas.start");
+
+    c = conf.target;
+    c_keyPress = keyPressFunc || null;
+    c_mouseButton = mouseButtonFunc || null;
+    c_mouseMove = mouseMoveFunc || null;
+
+    addEvent(conf.focusContainer, 'keydown', onKeyDown);
+    addEvent(conf.focusContainer, 'keyup', onKeyUp);
+    addEvent(c, 'mousedown', onMouseDown);
+    addEvent(c, 'mouseup', onMouseUp);
+    addEvent(c, 'mousemove', onMouseMove);
+    addEvent(c, (Engine.gecko) ? 'DOMMouseScroll' : 'mousewheel',
+            onMouseWheel);
+
+    /* Work around right and middle click browser behaviors */
+    addEvent(conf.focusContainer, 'click', onMouseDisable);
+    addEvent(conf.focusContainer.body, 'contextmenu', onMouseDisable);
+
+    debug("<< Canvas.start");
+};
+
+that.resize = function(width, height) {
+    var c = conf.target;
+
+    c.width = width;
+    c.height = height;
+
+    c_width  = c.offsetWidth;
+    c_height = c.offsetHeight;
+};
+
+that.clear = function() {
+    that.resize(640, 20);
+    conf.ctx.clearRect(0, 0, c_width, c_height);
+};
+
+that.stop = function() {
+    var c = conf.target;
+    removeEvent(conf.focusContainer, 'keydown', onKeyDown);
+    removeEvent(conf.focusContainer, 'keyup', onKeyUp);
+    removeEvent(c, 'mousedown', onMouseDown);
+    removeEvent(c, 'mouseup', onMouseUp);
+    removeEvent(c, 'mousemove', onMouseMove);
+    removeEvent(c, (Engine.gecko) ? 'DOMMouseScroll' : 'mousewheel',
+            onMouseWheel);
+
+    /* Work around right and middle click browser behaviors */
+    removeEvent(conf.focusContainer, 'click', onMouseDisable);
+    removeEvent(conf.focusContainer.body, 'contextmenu', onMouseDisable);
+};
+
+fillRect = function(x, y, width, height, color) {
+    var newStyle, c = color;
+    if (newStyle !== c_prevStyle) {
+        newStyle = "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
+        conf.ctx.fillStyle = newStyle;
+        c_prevStyle = newStyle;
+    }
+    conf.ctx.fillRect(x, y, width, height);
+};
+that.fillRect = fillRect;
+
+that.copyImage = function(old_x, old_y, new_x, new_y, width, height) {
+    conf.ctx.drawImage(conf.target, old_x, old_y, width, height,
+                                    new_x, new_y, width, height);
+};
+
+/*
+ * Tile rendering functions optimized for rendering engines.
+ *
+ * - In Chrome/webkit, Javascript image data array manipulations are
+ *   faster than direct Canvas fillStyle, fillRect rendering. In
+ *   gecko, Javascript array handling is much slower.
+ */
+that.getTile = function(x, y, width, height, color) {
+    var img, data, p, red, green, blue, j, i;
+    img = {'x': x, 'y': y, 'width': width, 'height': height,
+           'data': []};
+    data = img.data;
+    red = color[0];
+    green = color[1];
+    blue = color[2];
+    for (j = 0; j < height; j += 1) {
+        for (i = 0; i < width; i += 1) {
+            p = (i + (j * width) ) * 4;
+            data[p + 0] = red;
+            data[p + 1] = green;
+            data[p + 2] = blue;
+            //data[p + 3] = 255; // Set Alpha
+        }   
+    } 
+    return img;
+};
+
+that.setSubTile = function(img, x, y, w, h, color) {
+    var data, p, red, green, blue, width, j, i;
+    data = img.data;
+    width = img.width;
+    red = color[0];
+    green = color[1];
+    blue = color[2];
+    for (j = 0; j < h; j += 1) {
+        for (i = 0; i < w; i += 1) {
+            p = (x + i + ((y + j) * width) ) * 4;
+            data[p + 0] = red;
+            data[p + 1] = green;
+            data[p + 2] = blue;
+            //img.data[p + 3] = 255; // Set Alpha
+        }   
+    } 
+};
+
+that.putTile = function(img) {
+    that.blitImage(img.x, img.y, img.width, img.height, img.data, 0);
+};
+
+that.imageData = function(width, height) {
+    return conf.ctx.createImageData(width, height);
+};
+
+that.blitImage = function(x, y, width, height, arr, offset) {
+    var img, i, j, data;
+    img = that.imageData(width, height);
+    data = img.data;
+    for (i=0, j=offset; i < (width * height * 4); i=i+4, j=j+4) {
+        data[i + 0] = arr[j + 0];
+        data[i + 1] = arr[j + 1];
+        data[i + 2] = arr[j + 2];
+        data[i + 3] = 255; // Set Alpha
+    }
+    conf.ctx.putImageData(img, x, y);
+};
+
+return constructor();  // Return the public API interface
+
+}  // End of Canvas()
+
+
+// -------------------------------------------------------------------
+// VNC/RFB core code
+// -------------------------------------------------------------------
 function RFB(conf) {
 
 var that           = {},         // Public API interface
@@ -43,7 +483,7 @@ var that           = {},         // Public API interface
         ['COPYRECT',         0x01 ],
         ['HEXTILE',          0x05 ],
         ['RAW',              0x00 ],
-        ['DesktopSize',      -223 ],
+        ['DesktopSize',      -223 ]
         ],
 
     encHandlers    = {},
@@ -75,7 +515,7 @@ var that           = {},         // Public API interface
         height         : 0,
         encoding       : 0,
         subencoding    : -1,
-        background     : null,
+        background     : null
     },
 
     fb_Bpp         = 4,
@@ -96,7 +536,7 @@ var that           = {},         // Public API interface
 // Configuration settings
 that.conf = conf || {}; // Make it public
 function cdef(v, defval, desc) { 
-    if (typeof conf[v] === 'undefined') conf[v] = defval; }
+    if (typeof conf[v] === 'undefined') { conf[v] = defval; } }
 
 cdef('target',            null, 'VNC viewport rendering Canvas');
 cdef('focusContainer',    document, 'Area that traps keyboard input');
@@ -160,7 +600,7 @@ function constructor() {
         canvas = new Canvas({'target': conf.target,
                              'focusContainer': conf.focusContainer});
     } catch (exc) {
-        Util.Error("Canvas exception: " + exc);
+        error("Canvas exception: " + exc);
         updateState('fatal', "No working Canvas");
     }
     rmode = canvas.conf.render_mode;
@@ -169,7 +609,7 @@ function constructor() {
 
     /* Check web-socket-js if no builtin WebSocket support */
     if (window.WebSocket) {
-        Util.Info("Using native WebSockets");
+        info("Using native WebSockets");
         updateState('loaded', 'noVNC ready: native WebSockets, ' + rmode);
     } else {
         updateState('fatal', "Native WebSockets support is required");
@@ -186,36 +626,36 @@ function init_ws() {
         uri = "ws://";
     }
     uri += rfb_host + ":" + rfb_port + "/";
-    Util.Info("connecting to " + uri);
+    info("connecting to " + uri);
     ws = new WebSocket(uri);
 
     ws.onmessage = recv_message;
     ws.onopen = function(e) {
-        Util.Debug(">> WebSocket.onopen");
+        debug(">> WebSocket.onopen");
         if (rfb_state === "connect") {
             updateState('ProtocolVersion', "Starting VNC handshake");
         } else {
             updateState('failed', "Got unexpected WebSockets connection");
         }
-        Util.Debug("<< WebSocket.onopen");
+        debug("<< WebSocket.onopen");
     };
     ws.onclose = function(e) {
-        Util.Debug(">> WebSocket.onclose");
+        debug(">> WebSocket.onclose");
         if (rfb_state === 'disconnect') {
             updateState('disconnected', 'VNC disconnected');
         } else if (rfb_state === 'ProtocolVersion') {
             updateState('failed', 'Failed to connect to server');
         } else if (rfb_state in {'failed':1, 'disconnected':1}) {
-            Util.Error("Received onclose while disconnected");
+            error("Received onclose while disconnected");
         } else  {
             updateState('failed', 'Server disconnected');
         }
-        Util.Debug("<< WebSocket.onclose");
+        debug("<< WebSocket.onclose");
     };
     ws.onerror = function(e) {
-        Util.Debug(">> WebSocket.onerror");
+        debug(">> WebSocket.onerror");
         updateState('failed', "WebSocket error");
-        Util.Debug("<< WebSocket.onerror");
+        debug("<< WebSocket.onerror");
     };
 }
 
@@ -262,7 +702,7 @@ updateState = function(state, statusMsg) {
 
     if (state === oldstate) {
         /* Already here, ignore */
-        Util.Debug("Already in state '" + state + "', ignoring.");
+        debug("Already in state '" + state + "', ignoring.");
         return;
     }
 
@@ -284,7 +724,7 @@ updateState = function(state, statusMsg) {
 
         if (canvas && canvas.getContext()) {
             canvas.stop();
-            if (Util.log_level !== 'debug') {
+            if (log_level !== 'debug') {
                 canvas.clear();
             }
         }
@@ -292,7 +732,7 @@ updateState = function(state, statusMsg) {
         if (ws) {
             if ((ws.readyState === WebSocket.OPEN) || 
                (ws.readyState === WebSocket.CONNECTING)) {
-                Util.Info("Closing WebSocket connection");
+                info("Closing WebSocket connection");
                 ws.close();
             }
             ws.onmessage = function (e) { return; };
@@ -300,13 +740,13 @@ updateState = function(state, statusMsg) {
     }
 
     if (oldstate === 'fatal') {
-        Util.Error("Fatal error, cannot continue");
+        error("Fatal error, cannot continue");
     }
 
     if ((state === 'failed') || (state === 'fatal')) {
-        func = Util.Error;
+        func = Error;
     } else {
-        func = Util.Warn;
+        func = warn;
     }
 
     if ((oldstate === 'failed') && (state === 'disconnected')) {
@@ -320,13 +760,13 @@ updateState = function(state, statusMsg) {
     func("New state '" + rfb_state + "', was '" + oldstate + "'." + cmsg);
 
     if (connTimer && (rfb_state !== 'connect')) {
-        Util.Debug("Clearing connect timer");
+        debug("Clearing connect timer");
         clearInterval(connTimer);
         connTimer = null;
     }
 
     if (disconnTimer && (rfb_state !== 'disconnect')) {
-        Util.Debug("Clearing disconnect timer");
+        debug("Clearing disconnect timer");
         clearInterval(disconnTimer);
         disconnTimer = null;
     }
@@ -334,7 +774,7 @@ updateState = function(state, statusMsg) {
     switch (state) {
     case 'normal':
         if ((oldstate === 'disconnected') || (oldstate === 'failed')) {
-            Util.Error("Invalid transition from 'disconnected' or 'failed' to 'normal'");
+            error("Invalid transition from 'disconnected' or 'failed' to 'normal'");
         }
 
         break;
@@ -367,13 +807,13 @@ updateState = function(state, statusMsg) {
 
     case 'failed':
         if (oldstate === 'disconnected') {
-            Util.Error("Invalid transition from 'disconnected' to 'failed'");
+            error("Invalid transition from 'disconnected' to 'failed'");
         }
         if (oldstate === 'normal') {
-            Util.Error("Error while connected.");
+            error("Error while connected.");
         }
         if (oldstate === 'init') {
-            Util.Error("Error while initializing.");
+            error("Error while initializing.");
         }
 
         // Make sure we transition to disconnected
@@ -417,31 +857,31 @@ function decode_message(data) {
 
 function handle_message() {
     if (rQlen() === 0) {
-        Util.Warn("handle_message called on empty receive queue");
+        warn("handle_message called on empty receive queue");
         return;
     }
     switch (rfb_state) {
     case 'disconnected':
     case 'failed':
-        Util.Error("Got data while disconnected");
+        error("Got data while disconnected");
         break;
     case 'normal':
         if (normal_msg() && rQlen() > 0) {
             // true means we can continue processing
             // Give other events a chance to run
             if (msgTimer === null) {
-                Util.Debug("More data to process, creating timer");
+                debug("More data to process, creating timer");
                 msgTimer = setTimeout(function () {
                             msgTimer = null;
                             handle_message();
                         }, 10);
             } else {
-                Util.Debug("More data to process, existing timer");
+                debug("More data to process, existing timer");
             }
         }
         // Compact the queue
         if (rQ.length > rQmax) {
-            //Util.Debug("Compacting receive queue");
+            //debug("Compacting receive queue");
             rQ = rQ.slice(rQi);
             rQi = 0;
         }
@@ -458,15 +898,15 @@ recv_message = function(e) {
         if (rQlen() > 0) {
             handle_message();
         } else {
-            Util.Debug("Ignoring empty message");
+            debug("Ignoring empty message");
         }
     } catch (exc) {
         if (typeof exc.stack !== 'undefined') {
-            Util.Warn("recv_message, caught exception: " + exc.stack);
+            warn("recv_message, caught exception: " + exc.stack);
         } else if (typeof exc.description !== 'undefined') {
-            Util.Warn("recv_message, caught exception: " + exc.description);
+            warn("recv_message, caught exception: " + exc.description);
         } else {
-            Util.Warn("recv_message, caught exception:" + exc);
+            warn("recv_message, caught exception:" + exc);
         }
         if (typeof exc.name !== 'undefined') {
             updateState('failed', exc.name + ": " + exc.message);
@@ -483,7 +923,7 @@ send_array = function(arr) {
         ws.send(sQ);
         sQ = "";
     } else {
-        Util.Debug("Delaying send");
+        debug("Delaying send");
     }
 };
 
@@ -559,8 +999,8 @@ function mouseMove(x, y) {
 // RFB/VNC initialisation message handler
 init_msg = function() {
     var strlen, reason, reason_len, sversion, cversion,
-        i, types, num_types, challenge, response, bpp, depth,
-        big_endian, name_length;
+        i, types, num_types, challenge, response, bpp, true_color,
+        depth, big_endian, name_length;
 
     switch (rfb_state) {
 
@@ -571,7 +1011,7 @@ init_msg = function() {
             return;
         }
         sversion = rQshiftStr(12).substr(4,7);
-        Util.Info("Server ProtocolVersion: " + sversion);
+        info("Server ProtocolVersion: " + sversion);
         switch (sversion) {
             case "003.003": rfb_version = 3.3; break;
             case "003.006": rfb_version = 3.3; break;  // UltraVNC
@@ -597,7 +1037,7 @@ init_msg = function() {
                             sQ = "";
                         }
                     } else {
-                        Util.Debug("Delaying send");
+                        debug("Delaying send");
                     }
                 }, 50);
         }
@@ -613,7 +1053,7 @@ init_msg = function() {
             num_types = rQ[rQi++];
             if (rQlen() < num_types) {
                 rQi--;
-                Util.Debug("   waiting for security types");
+                debug("   waiting for security types");
                 return;
             }
             if (num_types === 0) {
@@ -625,7 +1065,7 @@ init_msg = function() {
             }
             rfb_auth_scheme = 0;
             types = rQshiftBytes(num_types);
-            Util.Debug("Server security types: " + types);
+            debug("Server security types: " + types);
             for (i=0; i < types.length; i+=1) {
                 if ((types[i] > rfb_auth_scheme) && (types[i] < 3)) {
                     rfb_auth_scheme = types[i];
@@ -640,7 +1080,7 @@ init_msg = function() {
             send_array([rfb_auth_scheme]);
         } else {
             if (rQlen() < 4) {
-                Util.Debug("   waiting for security scheme bytes");
+                debug("   waiting for security scheme bytes");
                 return;
             }
             rfb_auth_scheme = rQshift32();
@@ -651,11 +1091,11 @@ init_msg = function() {
         break;
 
     case 'Authentication' :
-        //Util.Debug("Security auth scheme: " + rfb_auth_scheme);
+        //debug("Security auth scheme: " + rfb_auth_scheme);
         switch (rfb_auth_scheme) {
             case 0:  // connection failed
                 if (rQlen() < 4) {
-                    Util.Debug("   waiting for auth reason bytes");
+                    debug("   waiting for auth reason bytes");
                     return;
                 }
                 strlen = rQshift32();
@@ -672,18 +1112,18 @@ init_msg = function() {
                     return;
                 }
                 if (rQlen() < 16) {
-                    Util.Debug("   waiting for auth challenge bytes");
+                    debug("   waiting for auth challenge bytes");
                     return;
                 }
                 challenge = rQshiftBytes(16);
-                //Util.Debug("Password: " + rfb_password);
-                //Util.Debug("Challenge: " + challenge +
+                //debug("Password: " + rfb_password);
+                //debug("Challenge: " + challenge +
                 //           " (" + challenge.length + ")");
                 response = genDES(rfb_password, challenge);
-                //Util.Debug("Response: " + response +
+                //debug("Response: " + response +
                 //           " (" + response.length + ")");
                 
-                //Util.Debug("Sending DES encrypted auth response");
+                //debug("Sending DES encrypted auth response");
                 send_array(response);
                 updateState('SecurityResult');
                 break;
@@ -708,7 +1148,7 @@ init_msg = function() {
                 if (rfb_version >= 3.8) {
                     reason_len = rQshift32();
                     if (rQlen() < reason_len) {
-                        Util.Debug("   waiting for SecurityResult reason bytes");
+                        debug("   waiting for SecurityResult reason bytes");
                         rQi -= 8; // Unshift the status and length
                         return;
                     }
@@ -742,7 +1182,7 @@ init_msg = function() {
         big_endian     = rQ[rQi++];
         true_color     = rQ[rQi++];
 
-        Util.Info("Screen: " + fb_width + "x" + fb_height + 
+        info("Screen: " + fb_width + "x" + fb_height + 
                   ", bpp: " + bpp + ", depth: " + depth +
                   ", big_endian: " + big_endian +
                   ", true_color: " + true_color);
@@ -794,28 +1234,28 @@ normal_msg = function() {
         updateState('failed', "Error: got SetColourMapEntries");
         break;
     case 2:  // Bell
-        Util.Warn("Bell (unsupported)");
+        warn("Bell (unsupported)");
         break;
     case 3:  // ServerCutText
-        Util.Debug("ServerCutText");
+        debug("ServerCutText");
         if (rQlen() < 7) {
-            //Util.Debug("waiting for ServerCutText header");
+            //debug("waiting for ServerCutText header");
             rQ--;
             return false;
         }
         rQshiftBytes(3);  // Padding
         length = rQshift32();
         if (rQlen() < length) {
-            //Util.Debug("waiting for ServerCutText bytes");
+            //debug("waiting for ServerCutText bytes");
             rQ-=8;
             return false;
         }
-        Util.Debug("ServerCutText: " + rQshiftStr(length));
+        debug("ServerCutText: " + rQshiftStr(length));
         break;
     default:
         updateState('failed',
                 "Disconnected: illegal server message type " + msg_type);
-        Util.Debug("rQ.slice(0,30):" + rQ.slice(0,30));
+        debug("rQ.slice(0,30):" + rQ.slice(0,30));
         break;
     }
     return ret;
@@ -831,7 +1271,7 @@ framebufferUpdate = function() {
             } else {
                 rQi -= 1;
             }
-            //Util.Debug("   waiting for FBU header bytes");
+            //debug("   waiting for FBU header bytes");
             return false;
         }
         rQi++;
@@ -844,12 +1284,12 @@ framebufferUpdate = function() {
             return false;
         }
         if (rQlen() < FBU.bytes) {
-            //Util.Debug("   waiting for " + (FBU.bytes - rQlen()) + " FBU bytes");
+            //debug("   waiting for " + (FBU.bytes - rQlen()) + " FBU bytes");
             return false;
         }
         if (FBU.bytes === 0) {
             if (rQlen() < 12) {
-                //Util.Debug("   waiting for rect header bytes");
+                //debug("   waiting for rect header bytes");
                 return false;
             }
             /* New FramebufferUpdate */
@@ -871,7 +1311,7 @@ framebufferUpdate = function() {
                 msg += " encoding:" + FBU.encoding;
                 msg += "(" + encNames[FBU.encoding] + ")";
                 msg += ", rQlen(): " + rQlen();
-                Util.Debug(msg);
+                debug(msg);
                 */
             } else {
                 updateState('failed',
@@ -898,7 +1338,7 @@ encHandlers.RAW = function display_raw() {
     }
     FBU.bytes = FBU.width * fb_Bpp; // At least a line
     if (rQlen() < FBU.bytes) {
-        //Util.Debug("   waiting for " +
+        //debug("   waiting for " +
         //           (FBU.bytes - rQlen()) + " RAW bytes");
         return false;
     }
@@ -922,7 +1362,7 @@ encHandlers.COPYRECT = function display_copy_rect() {
     var old_x, old_y;
 
     if (rQlen() < 4) {
-        //Util.Debug("   waiting for " +
+        //debug("   waiting for " +
         //           (FBU.bytes - rQlen()) + " COPYRECT bytes");
         return false;
     }
@@ -949,7 +1389,7 @@ encHandlers.HEXTILE = function display_hextile() {
     while (FBU.tiles > 0) {
         FBU.bytes = 1;
         if (rQlen() < FBU.bytes) {
-            //Util.Debug("   waiting for HEXTILE subencoding byte");
+            //debug("   waiting for HEXTILE subencoding byte");
             return false;
         }
         subencoding = rQ[rQi];  // Peek
@@ -980,7 +1420,7 @@ encHandlers.HEXTILE = function display_hextile() {
             if (subencoding & 0x08) { // AnySubrects
                 FBU.bytes += 1;   // Since we aren't shifting it off
                 if (rQlen() < FBU.bytes) {
-                    //Util.Debug("   waiting for hextile subrects header byte");
+                    //debug("   waiting for hextile subrects header byte");
                     return false;
                 }
                 subrects = rQ[rQi + FBU.bytes-1]; // Peek
@@ -993,7 +1433,7 @@ encHandlers.HEXTILE = function display_hextile() {
         }
 
         if (rQlen() < FBU.bytes) {
-            //Util.Debug("   waiting for " +
+            //debug("   waiting for " +
             //           (FBU.bytes - rQlen()) + " hextile bytes");
             return false;
         }
@@ -1004,7 +1444,7 @@ encHandlers.HEXTILE = function display_hextile() {
         if (FBU.subencoding === 0) {
             if (FBU.lastsubencoding & 0x01) {
                 /* Weird: ignore blanks after RAW */
-                Util.Debug("     Ignoring blank after RAW");
+                debug("     Ignoring blank after RAW");
             } else {
                 canvas.fillRect(x, y, w, h, FBU.background);
             }
@@ -1060,19 +1500,18 @@ encHandlers.HEXTILE = function display_hextile() {
 };
 
 encHandlers.DesktopSize = function set_desktopsize() {
-    Util.Debug(">> set_desktopsize");
+    debug(">> set_desktopsize");
     fb_width = FBU.width;
     fb_height = FBU.height;
     canvas.clear();
     canvas.resize(fb_width, fb_height);
-    timing.fbu_rt_start = (new Date()).getTime();
     // Send a new non-incremental request
     send_array(fbUpdateRequest(0));
 
     FBU.bytes = 0;
     FBU.rects -= 1;
 
-    Util.Debug("<< set_desktopsize");
+    debug("<< set_desktopsize");
     return true;
 };
 
@@ -1107,7 +1546,7 @@ clientEncodings = function() {
     for (i=0; i<encodings.length; i += 1) {
         if ((encodings[i][0] === "Cursor") &&
             (! conf.local_cursor)) {
-            Util.Debug("Skipping Cursor pseudo-encoding");
+            debug("Skipping Cursor pseudo-encoding");
         } else {
             encList.push(encodings[i][1]);
         }
@@ -1175,7 +1614,7 @@ that.sendPassword = function(passwd) {
 
 that.sendCtrlAltDel = function() {
     if (rfb_state !== "normal") { return false; }
-    Util.Info("Sending Ctrl-Alt-Del");
+    info("Sending Ctrl-Alt-Del");
     var arr = [];
     arr = arr.concat(keyEvent(0xFFE3, 1)); // Control
     arr = arr.concat(keyEvent(0xFFE9, 1)); // Alt
@@ -1193,10 +1632,10 @@ that.sendKey = function(code, down) {
     if (rfb_state !== "normal") { return false; }
     var arr = [];
     if (typeof down !== 'undefined') {
-        Util.Info("Sending key code (" + (down ? "down" : "up") + "): " + code);
+        info("Sending key code (" + (down ? "down" : "up") + "): " + code);
         arr = arr.concat(keyEvent(code, down ? 1 : 0));
     } else {
-        Util.Info("Sending key code (down + up): " + code);
+        info("Sending key code (down + up): " + code);
         arr = arr.concat(keyEvent(code, 1));
         arr = arr.concat(keyEvent(code, 0));
     }
@@ -1223,3 +1662,206 @@ that.testMode = function(override_send_array) {
 return constructor();  // Return the public API interface
 
 }  // End of RFB()
+
+
+// -------------------------------------------------------------------
+// 16-byte DES implementation:
+//     Copyright (C) 1999 AT&T Laboratories Cambridge.  All Rights Reserved.
+//     Copyright (c) 1996 Widget Workshop, Inc. All Rights Reserved.
+//     Copyright (C) 1996 by Jef Poskanzer <jef@acme.com>.  All rights reserved.
+//
+// See docs/LICENSE.DES for full copyright and license
+// -------------------------------------------------------------------
+function DES(passwd) {
+
+// Tables, permutations, S-boxes, etc.
+var PC2 = [13,16,10,23, 0, 4, 2,27,14, 5,20, 9,22,18,11, 3,
+           25, 7,15, 6,26,19,12, 1,40,51,30,36,46,54,29,39,
+           50,44,32,47,43,48,38,55,33,52,45,41,49,35,28,31 ],
+    totrot = [ 1, 2, 4, 6, 8,10,12,14,15,17,19,21,23,25,27,28],
+    z = 0x0, a,b,c,d,e,f, SP1,SP2,SP3,SP4,SP5,SP6,SP7,SP8,
+    keys = [];
+
+a=1<<16; b=1<<24; c=a|b; d=1<<2; e=1<<10; f=d|e;
+SP1 = [c|e,z|z,a|z,c|f,c|d,a|f,z|d,a|z,z|e,c|e,c|f,z|e,b|f,c|d,b|z,z|d,
+       z|f,b|e,b|e,a|e,a|e,c|z,c|z,b|f,a|d,b|d,b|d,a|d,z|z,z|f,a|f,b|z,
+       a|z,c|f,z|d,c|z,c|e,b|z,b|z,z|e,c|d,a|z,a|e,b|d,z|e,z|d,b|f,a|f,
+       c|f,a|d,c|z,b|f,b|d,z|f,a|f,c|e,z|f,b|e,b|e,z|z,a|d,a|e,z|z,c|d];
+a=1<<20; b=1<<31; c=a|b; d=1<<5; e=1<<15; f=d|e;
+SP2 = [c|f,b|e,z|e,a|f,a|z,z|d,c|d,b|f,b|d,c|f,c|e,b|z,b|e,a|z,z|d,c|d,
+       a|e,a|d,b|f,z|z,b|z,z|e,a|f,c|z,a|d,b|d,z|z,a|e,z|f,c|e,c|z,z|f,
+       z|z,a|f,c|d,a|z,b|f,c|z,c|e,z|e,c|z,b|e,z|d,c|f,a|f,z|d,z|e,b|z,
+       z|f,c|e,a|z,b|d,a|d,b|f,b|d,a|d,a|e,z|z,b|e,z|f,b|z,c|d,c|f,a|e];
+a=1<<17; b=1<<27; c=a|b; d=1<<3; e=1<<9; f=d|e;
+SP3 = [z|f,c|e,z|z,c|d,b|e,z|z,a|f,b|e,a|d,b|d,b|d,a|z,c|f,a|d,c|z,z|f,
+       b|z,z|d,c|e,z|e,a|e,c|z,c|d,a|f,b|f,a|e,a|z,b|f,z|d,c|f,z|e,b|z,
+       c|e,b|z,a|d,z|f,a|z,c|e,b|e,z|z,z|e,a|d,c|f,b|e,b|d,z|e,z|z,c|d,
+       b|f,a|z,b|z,c|f,z|d,a|f,a|e,b|d,c|z,b|f,z|f,c|z,a|f,z|d,c|d,a|e];
+a=1<<13; b=1<<23; c=a|b; d=1<<0; e=1<<7; f=d|e;
+SP4 = [c|d,a|f,a|f,z|e,c|e,b|f,b|d,a|d,z|z,c|z,c|z,c|f,z|f,z|z,b|e,b|d,
+       z|d,a|z,b|z,c|d,z|e,b|z,a|d,a|e,b|f,z|d,a|e,b|e,a|z,c|e,c|f,z|f,
+       b|e,b|d,c|z,c|f,z|f,z|z,z|z,c|z,a|e,b|e,b|f,z|d,c|d,a|f,a|f,z|e,
+       c|f,z|f,z|d,a|z,b|d,a|d,c|e,b|f,a|d,a|e,b|z,c|d,z|e,b|z,a|z,c|e];
+a=1<<25; b=1<<30; c=a|b; d=1<<8; e=1<<19; f=d|e;
+SP5 = [z|d,a|f,a|e,c|d,z|e,z|d,b|z,a|e,b|f,z|e,a|d,b|f,c|d,c|e,z|f,b|z,
+       a|z,b|e,b|e,z|z,b|d,c|f,c|f,a|d,c|e,b|d,z|z,c|z,a|f,a|z,c|z,z|f,
+       z|e,c|d,z|d,a|z,b|z,a|e,c|d,b|f,a|d,b|z,c|e,a|f,b|f,z|d,a|z,c|e,
+       c|f,z|f,c|z,c|f,a|e,z|z,b|e,c|z,z|f,a|d,b|d,z|e,z|z,b|e,a|f,b|d];
+a=1<<22; b=1<<29; c=a|b; d=1<<4; e=1<<14; f=d|e;
+SP6 = [b|d,c|z,z|e,c|f,c|z,z|d,c|f,a|z,b|e,a|f,a|z,b|d,a|d,b|e,b|z,z|f,
+       z|z,a|d,b|f,z|e,a|e,b|f,z|d,c|d,c|d,z|z,a|f,c|e,z|f,a|e,c|e,b|z,
+       b|e,z|d,c|d,a|e,c|f,a|z,z|f,b|d,a|z,b|e,b|z,z|f,b|d,c|f,a|e,c|z,
+       a|f,c|e,z|z,c|d,z|d,z|e,c|z,a|f,z|e,a|d,b|f,z|z,c|e,b|z,a|d,b|f];
+a=1<<21; b=1<<26; c=a|b; d=1<<1; e=1<<11; f=d|e;
+SP7 = [a|z,c|d,b|f,z|z,z|e,b|f,a|f,c|e,c|f,a|z,z|z,b|d,z|d,b|z,c|d,z|f,
+       b|e,a|f,a|d,b|e,b|d,c|z,c|e,a|d,c|z,z|e,z|f,c|f,a|e,z|d,b|z,a|e,
+       b|z,a|e,a|z,b|f,b|f,c|d,c|d,z|d,a|d,b|z,b|e,a|z,c|e,z|f,a|f,c|e,
+       z|f,b|d,c|f,c|z,a|e,z|z,z|d,c|f,z|z,a|f,c|z,z|e,b|d,b|e,z|e,a|d];
+a=1<<18; b=1<<28; c=a|b; d=1<<6; e=1<<12; f=d|e;
+SP8 = [b|f,z|e,a|z,c|f,b|z,b|f,z|d,b|z,a|d,c|z,c|f,a|e,c|e,a|f,z|e,z|d,
+       c|z,b|d,b|e,z|f,a|e,a|d,c|d,c|e,z|f,z|z,z|z,c|d,b|d,b|e,a|f,a|z,
+       a|f,a|z,c|e,z|e,z|d,c|d,z|e,a|f,b|e,z|d,b|d,c|z,c|d,b|z,a|z,b|f,
+       z|z,c|f,a|d,b|d,c|z,b|e,b|f,z|z,c|f,a|e,a|e,z|f,z|f,a|d,b|z,c|e];
+
+// Set the key.
+function setKeys(keyBlock) {
+    var i, j, l, m, n, o, pc1m = [], pcr = [], kn = [],
+        raw0, raw1, rawi, KnLi;
+
+    for (j = 0, l = 56; j < 56; ++j, l-=8) {
+        l += l<-5 ? 65 : l<-3 ? 31 : l<-1 ? 63 : l===27 ? 35 : 0; // PC1
+        m = l & 0x7;
+        pc1m[j] = ((keyBlock[l >>> 3] & (1<<m)) !== 0) ? 1: 0;
+    }
+
+    for (i = 0; i < 16; ++i) {
+        m = i << 1;
+        n = m + 1;
+        kn[m] = kn[n] = 0;
+        for (o=28; o<59; o+=28) {
+            for (j = o-28; j < o; ++j) {
+                l = j + totrot[i];
+                if (l < o) {
+                    pcr[j] = pc1m[l];
+                } else {
+                    pcr[j] = pc1m[l - 28];
+                }
+            }
+        }
+        for (j = 0; j < 24; ++j) {
+            if (pcr[PC2[j]] !== 0) {
+                kn[m] |= 1<<(23-j);
+            }
+            if (pcr[PC2[j + 24]] !== 0) {
+                kn[n] |= 1<<(23-j);
+            }
+        }
+    }
+
+    // cookey
+    for (i = 0, rawi = 0, KnLi = 0; i < 16; ++i) {
+        raw0 = kn[rawi++];
+        raw1 = kn[rawi++];
+        keys[KnLi] = (raw0 & 0x00fc0000) << 6;
+        keys[KnLi] |= (raw0 & 0x00000fc0) << 10;
+        keys[KnLi] |= (raw1 & 0x00fc0000) >>> 10;
+        keys[KnLi] |= (raw1 & 0x00000fc0) >>> 6;
+        ++KnLi;
+        keys[KnLi] = (raw0 & 0x0003f000) << 12;
+        keys[KnLi] |= (raw0 & 0x0000003f) << 16;
+        keys[KnLi] |= (raw1 & 0x0003f000) >>> 4;
+        keys[KnLi] |= (raw1 & 0x0000003f);
+        ++KnLi;
+    }
+}
+
+// Encrypt 8 bytes of text
+function enc8(text) {
+    var i = 0, b = text.slice(), fval, keysi = 0,
+        l, r, x; // left, right, accumulator
+
+    // Squash 8 bytes to 2 ints
+    l = b[i++]<<24 | b[i++]<<16 | b[i++]<<8 | b[i++];
+    r = b[i++]<<24 | b[i++]<<16 | b[i++]<<8 | b[i++];
+
+    x = ((l >>> 4) ^ r) & 0x0f0f0f0f;
+    r ^= x;
+    l ^= (x << 4);
+    x = ((l >>> 16) ^ r) & 0x0000ffff;
+    r ^= x;
+    l ^= (x << 16);
+    x = ((r >>> 2) ^ l) & 0x33333333;
+    l ^= x;
+    r ^= (x << 2);
+    x = ((r >>> 8) ^ l) & 0x00ff00ff;
+    l ^= x;
+    r ^= (x << 8);
+    r = (r << 1) | ((r >>> 31) & 1);
+    x = (l ^ r) & 0xaaaaaaaa;
+    l ^= x;
+    r ^= x;
+    l = (l << 1) | ((l >>> 31) & 1);
+
+    for (i = 0; i < 8; ++i) {
+        x = (r << 28) | (r >>> 4);
+        x ^= keys[keysi++];
+        fval =  SP7[x & 0x3f];
+        fval |= SP5[(x >>> 8) & 0x3f];
+        fval |= SP3[(x >>> 16) & 0x3f];
+        fval |= SP1[(x >>> 24) & 0x3f];
+        x = r ^ keys[keysi++];
+        fval |= SP8[x & 0x3f];
+        fval |= SP6[(x >>> 8) & 0x3f];
+        fval |= SP4[(x >>> 16) & 0x3f];
+        fval |= SP2[(x >>> 24) & 0x3f];
+        l ^= fval;
+        x = (l << 28) | (l >>> 4);
+        x ^= keys[keysi++];
+        fval =  SP7[x & 0x3f];
+        fval |= SP5[(x >>> 8) & 0x3f];
+        fval |= SP3[(x >>> 16) & 0x3f];
+        fval |= SP1[(x >>> 24) & 0x3f];
+        x = l ^ keys[keysi++];
+        fval |= SP8[x & 0x0000003f];
+        fval |= SP6[(x >>> 8) & 0x3f];
+        fval |= SP4[(x >>> 16) & 0x3f];
+        fval |= SP2[(x >>> 24) & 0x3f];
+        r ^= fval;
+    }
+
+    r = (r << 31) | (r >>> 1);
+    x = (l ^ r) & 0xaaaaaaaa;
+    l ^= x;
+    r ^= x;
+    l = (l << 31) | (l >>> 1);
+    x = ((l >>> 8) ^ r) & 0x00ff00ff;
+    r ^= x;
+    l ^= (x << 8);
+    x = ((l >>> 2) ^ r) & 0x33333333;
+    r ^= x;
+    l ^= (x << 2);
+    x = ((r >>> 16) ^ l) & 0x0000ffff;
+    l ^= x;
+    r ^= (x << 16);
+    x = ((r >>> 4) ^ l) & 0x0f0f0f0f;
+    l ^= x;
+    r ^= (x << 4);
+
+    // Spread ints to bytes
+    x = [r, l];
+    for (i = 0; i < 8; i++) {
+        b[i] = (x[i>>>2] >>> (8*(3 - (i%4)))) % 256;
+        if (b[i] < 0) { b[i] += 256; } // unsigned
+    }
+    return b;
+}
+
+// Encrypt 16 bytes of text using passwd as key
+function encrypt(t) {
+    return enc8(t.slice(0,8)).concat(enc8(t.slice(8,16)));
+}
+
+setKeys(passwd);             // Setup keys
+return {'encrypt': encrypt}; // Public interface
+
+} // End of DES()
