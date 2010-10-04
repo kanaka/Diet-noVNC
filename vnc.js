@@ -18,19 +18,14 @@ var log_level, debug, info, warn, error, stub, Features, Engine;
 // -------------------------------------------------------------------
 
 // Make arrays quack
-Array.prototype.push8 = function (num) {
-    this.push(num & 0xFF);
+Array.prototype.push8 = function (n) {
+    this.push(n&0xFF);
 };
-
-Array.prototype.push16 = function (num) {
-    this.push((num >> 8) & 0xFF,
-              (num     ) & 0xFF  );
+Array.prototype.push16 = function (n) {
+    this.push((n>>8)&0xFF, (n)&0xFF);
 };
-Array.prototype.push32 = function (num) {
-    this.push((num >> 24) & 0xFF,
-              (num >> 16) & 0xFF,
-              (num >>  8) & 0xFF,
-              (num      ) & 0xFF  );
+Array.prototype.push32 = function (n) {
+    this.push((n>>24)&0xFF, (n>>16)&0xFF, (n>>8)&0xFF, (n)&0xFF);
 };
 
 // Logging/debug routines
@@ -63,35 +58,20 @@ Engine = {
             return (!window.ActiveXObject) ? false : ((window.XMLHttpRequest) ? ((document.querySelectorAll) ? 6 : 5) : 4); }()),
     'webkit': (function() {
             try { return (navigator.taintEnabled) ? false : ((Features.xpath) ? ((Features.query) ? 525 : 420) : 419); } catch (e) { return false; } }()),
-    //'webkit': (function() {
-    //        return ((typeof navigator.taintEnabled !== "unknown") && navigator.taintEnabled) ? false : ((Features.xpath) ? ((Features.query) ? 525 : 420) : 419); }()),
     'gecko': (function() {
             return (!document.getBoxObjectFor && window.mozInnerScreenX == null) ? false : ((document.getElementsByClassName) ? 19 : 18); }())
 };
 
 
-// -------------------------------------------------------------------
 // VNC Canvas drawing area
-// -------------------------------------------------------------------
 function Canvas(conf) {
 
 var that           = {},         // Public API interface
 
-    // Pre-declare functions used before definitions (jslint)jslint
-    setFillColor, fillRect,
-
     // Private Canvas namespace variables
-    c_forceCanvas = false,
-
-    c_width        = 0,
-    c_height       = 0,
-
+    c_width        = 0, c_height       = 0,
     c_prevStyle    = "",
-
-    c_keyPress     = null,
-    c_mouseButton  = null,
-    c_mouseMove    = null;
-
+    c_keyPress = null, c_mouseButton = null, c_mouseMove = null;
 
 // Configuration settings
 that.conf = conf || {}; // Make it public
@@ -106,27 +86,7 @@ cdef('render_mode',    '',       'Canvas rendering mode (read-only)');
 // Private functions
 //
 
-// Create the public API interface
-function constructor() {
-    debug(">> Canvas.init");
-
-    var c = conf.target;
-
-    if (! c) { throw("target must be set"); }
-    if (! c.getContext) { throw("no getContext method"); }
-
-    conf.ctx = c.getContext('2d');
-    if (! conf.ctx.createImageData) { throw("no createImageData method"); }
-
-    that.clear();
-    conf.render_mode = "createImageData rendering";
-    conf.focused = true;
-
-    debug("<< Canvas.init");
-    return that ;
-}
-
-/* Translate DOM key event to keysym value */
+// Translate DOM key event to keysym value
 function getKeysym(e) {
     var evt = (e ? e : window.event), keysym, map1, map2, map3;
 
@@ -149,17 +109,17 @@ function getKeysym(e) {
 
     keysym = evt.keyCode;
 
-    /* Remap modifier and special keys */
+    // Remap modifier and special keys
     if (keysym in map1) { keysym = 0xFF00 + map1[keysym]; }
 
-    /* Remap symbols */
+    // Remap symbols
     if (keysym in map2) { keysym = map2[keysym]; }
     
-    /* Remap shifted and unshifted keys */
+    // Remap shifted and unshifted keys
     if (!!evt.shiftKey) {
         if (keysym in map3) { keysym = map3[keysym]; }
     } else if ((keysym >= 65) && (keysym <=90)) {
-        /* Remap unshifted A-Z */
+        // Remap unshifted A-Z
         keysym += 32;
     } 
 
@@ -288,7 +248,7 @@ function onMouseDisable(e) {
     if (! conf.focused) { return true; }
     evt = (e ? e : window.event);
     pos = getEventPosition(e, conf.target);
-    /* Stop propagation if inside canvas area */
+    // Stop propagation if inside canvas area
     if ((pos.x >= 0) && (pos.y >= 0) &&
         (pos.x < c_width) && (pos.y < c_height)) {
         //debug("mouse event disabled");
@@ -324,7 +284,7 @@ that.start = function(keyPressFunc, mouseButtonFunc, mouseMoveFunc) {
     addEvent(c, (Engine.gecko) ? 'DOMMouseScroll' : 'mousewheel',
             onMouseWheel);
 
-    /* Work around right and middle click browser behaviors */
+    // Work around right and middle click browser behaviors
     addEvent(conf.focusContainer, 'click', onMouseDisable);
     addEvent(conf.focusContainer.body, 'contextmenu', onMouseDisable);
 
@@ -356,68 +316,45 @@ that.stop = function() {
     removeEvent(c, (Engine.gecko) ? 'DOMMouseScroll' : 'mousewheel',
             onMouseWheel);
 
-    /* Work around right and middle click browser behaviors */
+    // Work around right and middle click browser behaviors
     removeEvent(conf.focusContainer, 'click', onMouseDisable);
     removeEvent(conf.focusContainer.body, 'contextmenu', onMouseDisable);
 };
 
-fillRect = function(x, y, width, height, color) {
-    var newStyle, c = color;
+that.fillRect = function(x, y, width, height, c) {
+    var newStyle = "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
     if (newStyle !== c_prevStyle) {
-        newStyle = "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
-        conf.ctx.fillStyle = newStyle;
-        c_prevStyle = newStyle;
+        conf.ctx.fillStyle = c_prevStyle = newStyle;
     }
     conf.ctx.fillRect(x, y, width, height);
 };
-that.fillRect = fillRect;
 
-that.copyImage = function(old_x, old_y, new_x, new_y, width, height) {
-    conf.ctx.drawImage(conf.target, old_x, old_y, width, height,
-                                    new_x, new_y, width, height);
+that.copyImage = function(x1, y1, x2, y2, w, h) {
+    conf.ctx.drawImage(conf.target, x1, y1, w, h, x2, y2, w, h);
 };
 
-/*
- * Tile rendering functions optimized for rendering engines.
- *
- * - In Chrome/webkit, Javascript image data array manipulations are
- *   faster than direct Canvas fillStyle, fillRect rendering. In
- *   gecko, Javascript array handling is much slower.
- */
+// Tile rendering functions
 that.getTile = function(x, y, width, height, color) {
-    var img, data, p, red, green, blue, j, i;
+    var img, data = [], p, r, g, b, j, i;
     img = {'x': x, 'y': y, 'width': width, 'height': height,
-           'data': []};
-    data = img.data;
-    red = color[0];
-    green = color[1];
-    blue = color[2];
-    for (j = 0; j < height; j += 1) {
-        for (i = 0; i < width; i += 1) {
-            p = (i + (j * width) ) * 4;
-            data[p + 0] = red;
-            data[p + 1] = green;
-            data[p + 2] = blue;
-            //data[p + 3] = 255; // Set Alpha
-        }   
-    } 
+           'data': data};
+    r = color[0]; g = color[1]; b = color[2];
+    for (i = 0; i < (width * height * 4); i+=4) {
+        data[i] = r; data[i+1] = g; data[i+2] = b;
+    }
     return img;
 };
 
 that.setSubTile = function(img, x, y, w, h, color) {
-    var data, p, red, green, blue, width, j, i;
+    var data, p, r, g, b, width, j, i, xend, yend;
     data = img.data;
     width = img.width;
-    red = color[0];
-    green = color[1];
-    blue = color[2];
-    for (j = 0; j < h; j += 1) {
-        for (i = 0; i < w; i += 1) {
-            p = (x + i + ((y + j) * width) ) * 4;
-            data[p + 0] = red;
-            data[p + 1] = green;
-            data[p + 2] = blue;
-            //img.data[p + 3] = 255; // Set Alpha
+    r = color[0]; g = color[1]; b = color[2];
+    xend = x + w; yend = y + h;
+    for (j = y; j < yend; j++) {
+        for (i = x; i < xend; i++) {
+            p = (i + (j * width) ) * 4;
+            data[p+0] = r; data[p+1] = g; data[p+2] = b;
         }   
     } 
 };
@@ -426,13 +363,9 @@ that.putTile = function(img) {
     that.blitImage(img.x, img.y, img.width, img.height, img.data, 0);
 };
 
-that.imageData = function(width, height) {
-    return conf.ctx.createImageData(width, height);
-};
-
 that.blitImage = function(x, y, width, height, arr, offset) {
     var img, i, j, data;
-    img = that.imageData(width, height);
+    img = conf.ctx.createImageData(width, height);
     data = img.data;
     for (i=0, j=offset; i < (width * height * 4); i=i+4, j=j+4) {
         data[i + 0] = arr[j + 0];
@@ -443,7 +376,17 @@ that.blitImage = function(x, y, width, height, arr, offset) {
     conf.ctx.putImageData(img, x, y);
 };
 
-return constructor();  // Return the public API interface
+// Sanity checks, and initialization
+var c = conf.target;
+if (! c) { throw("target must be set"); }
+if (! c.getContext) { throw("no getContext method"); }
+conf.ctx = c.getContext('2d');
+if (! conf.ctx.createImageData) { throw("no createImageData method"); }
+
+that.clear();
+conf.render_mode = "createImageData rendering";
+conf.focused = true;
+return that;  // Return the public API interface
 
 }  // End of Canvas()
 
@@ -456,13 +399,7 @@ function RFB(conf) {
 var that           = {},         // Public API interface
 
     // Pre-declare private functions used before definitions (jslint)
-    init_vars, updateState, init_msg, normal_msg, recv_message,
-    framebufferUpdate, print_stats,
-
-    pixelFormat, clientEncodings, fbUpdateRequest,
-    keyEvent, pointerEvent,
-
-    send_array, checkEvents,  // Overridable for testing
+    updateState, init_msg, normal_msg, recv_message, framebufferUpdate,
 
     //
     // Private RFB namespace variables
@@ -479,15 +416,13 @@ var that           = {},         // Public API interface
 
 
     // In preference order
-    encodings      = [
-        ['COPYRECT',         0x01 ],
-        ['HEXTILE',          0x05 ],
-        ['RAW',              0x00 ],
-        ['DesktopSize',      -223 ]
-        ],
-
+    encList = [1, 5, 0, -223],
     encHandlers    = {},
-    encNames       = {}, 
+    encNames       = {
+        '1': 'COPYRECT',
+        '5': 'HEXTILE',
+        '0': 'RAW',
+        '-223': 'DesktopSize' },
 
     ws             = null,   // Web Socket object
     canvas         = null,   // Canvas object
@@ -504,15 +439,12 @@ var that           = {},         // Public API interface
 
     // Frame buffer update state
     FBU            = {
+        x : 0, y : 0,
+        w : 0, h : 0,
         rects          : 0,
-        subrects       : 0,  // RRE and HEXTILE
         lines          : 0,  // RAW
         tiles          : 0,  // HEXTILE
         bytes          : 0,
-        x              : 0,
-        y              : 0,
-        width          : 0, 
-        height         : 0,
         encoding       : 0,
         subencoding    : -1,
         background     : null
@@ -548,14 +480,11 @@ cdef('fbu_req_rate',      1413, 'Timing (ms) of frameBufferUpdate requests');
 
 cdef('updateState', function() {}, 'callback: state update');
 
-
 //
 // Private functions
 //
 
-//
 // Receive Queue functions
-//
 function rQlen() {
     return rQ.length - rQi;
 }
@@ -582,41 +511,28 @@ function rQshiftBytes(len) {
     return rQ.slice(rQi-len, rQi);
 }
 
-//
-// Setup routines
-//
-
-// Create the public API interface and initialize
-function constructor() {
-    var i, rmode;
-
-    // Create lookup tables based encoding number
-    for (i=0; i < encodings.length; i+=1) {
-        encHandlers[encodings[i][1]] = encHandlers[encodings[i][0]];
-        encNames[encodings[i][1]] = encodings[i][0];
+// Check to see if we must wait for 'num' bytes (default to FBU.bytes)
+// to be available in the receive queue. Return true if we need to
+// wait (and possibly print a debug message), otherwise false.
+function rQwait(msg, num, goback) {
+    if (typeof num !== 'number') { num = FBU.bytes; }
+    var rQlen = rQ.length - rQi; // Skip rQlen() function call
+    if (rQlen < num) {
+        if (goback) {
+            if (rQi < goback) {
+                throw("rQwait cannot backup " + goback + " bytes");
+            }
+            rQi -= goback;
+        }
+        //debug("   waiting for " + (num-rQlen) +
+        //           " " + msg + " byte(s)");
+        return true;  // true means need more data
     }
-    // Initialize canvas
-    try {
-        canvas = new Canvas({'target': conf.target,
-                             'focusContainer': conf.focusContainer});
-    } catch (exc) {
-        error("Canvas exception: " + exc);
-        updateState('fatal', "No working Canvas");
-    }
-    rmode = canvas.conf.render_mode;
-
-    init_vars();
-
-    /* Check web-socket-js if no builtin WebSocket support */
-    if (window.WebSocket) {
-        info("Using native WebSockets");
-        updateState('loaded', 'noVNC ready: native WebSockets, ' + rmode);
-    } else {
-        updateState('fatal', "Native WebSockets support is required");
-    }
-
-    return that;  // Return the public API interface
+    return false;
 }
+
+
+// Setup routines
 
 function init_ws() {
     var uri = "";
@@ -665,7 +581,6 @@ init_vars = function() {
     rQi              = 0;
     sQ               = "";
     FBU.rects        = 0;
-    FBU.subrects     = 0;  // RRE and HEXTILE
     FBU.lines        = 0;  // RAW
     FBU.tiles        = 0;  // HEXTILE
     mouse_buttonMask = 0;
@@ -934,7 +849,7 @@ function send_string(str) {
 
 function genDES(password, challenge) {
     var i, passwd = [], des;
-    for (i=0; i < password.length; i += 1) {
+    for (i=0; i < password.length; i++) {
         passwd.push(password.charCodeAt(i));
     }
     return (new DES(passwd)).encrypt(challenge);
@@ -990,6 +905,60 @@ function mouseButton(x, y, down, bmask) {
 function mouseMove(x, y) {
     mouse_arr = mouse_arr.concat( pointerEvent(x, y) );
 }
+
+/*
+ * Client message routines
+ */
+
+pixelFormat = function() {
+    var arr = [0, 0, 0, 0]; // msg-type, padding
+
+    arr = arr.concat(fb_Bpp*8, fb_depth*8); // bpp, depth
+    arr = arr.concat(0, 1); // little-endian, true-color
+
+    arr.push16(255);  // red-max
+    arr.push16(255);  // green-max
+    arr.push16(255);  // blue-max
+    arr = arr.concat(0, 8, 16); // red-shift, green-shift, blue-shift
+
+    arr = arr.concat(0, 0, 0);     // padding
+    return arr;
+};
+
+clientEncodings = function() {
+    var arr = [2, 0], e;
+
+    arr.push16(encList.length); // encoding count
+    for (i=0; i<encList.length; i++) { arr.push32(encList[i]); }
+    debug("here3: arr: " + arr + " (" + arr.length + ")");
+    return arr;
+};
+
+fbUpdateRequest = function(incremental, x, y, xw, yw) {
+    var arr = [3, incremental];
+    if (!x) { x = 0; }
+    if (!y) { y = 0; }
+    if (!xw) { xw = fb_width; }
+    if (!yw) { yw = fb_height; }
+    arr.push16(x);
+    arr.push16(y);
+    arr.push16(xw);
+    arr.push16(yw);
+    return arr;
+};
+
+keyEvent = function(keysym, down) {
+    var arr = [4, down, 0, 0];
+    arr.push32(keysym);
+    return arr;
+};
+
+pointerEvent = function(x, y) {
+    var arr = [5, mouse_buttonMask];
+    arr.push16(x);
+    arr.push16(y);
+    return arr;
+};
 
 
 //
@@ -1051,11 +1020,7 @@ init_msg = function() {
     case 'Security' :
         if (rfb_version >= 3.7) {
             num_types = rQ[rQi++];
-            if (rQlen() < num_types) {
-                rQi--;
-                debug("   waiting for security types");
-                return;
-            }
+            if (rQwait("security type", num_types, 1)) { return false; }
             if (num_types === 0) {
                 strlen = rQshift32();
                 reason = rQshiftStr(strlen);
@@ -1079,10 +1044,7 @@ init_msg = function() {
             
             send_array([rfb_auth_scheme]);
         } else {
-            if (rQlen() < 4) {
-                debug("   waiting for security scheme bytes");
-                return;
-            }
+            if (rQwait("security scheme", 4)) { return false; }
             rfb_auth_scheme = rQshift32();
         }
         updateState('Authentication',
@@ -1094,10 +1056,7 @@ init_msg = function() {
         //debug("Security auth scheme: " + rfb_auth_scheme);
         switch (rfb_auth_scheme) {
             case 0:  // connection failed
-                if (rQlen() < 4) {
-                    debug("   waiting for auth reason bytes");
-                    return;
-                }
+                if (rQwait("auth reason", 4)) { return false; }
                 strlen = rQshift32();
                 reason = rQshiftStr(strlen);
                 updateState('failed',
@@ -1111,10 +1070,7 @@ init_msg = function() {
                     updateState('password', "Password Required");
                     return;
                 }
-                if (rQlen() < 16) {
-                    debug("   waiting for auth challenge bytes");
-                    return;
-                }
+                if (rQwait("auth challenge", 16)) { return false; }
                 challenge = rQshiftBytes(16);
                 //debug("Password: " + rfb_password);
                 //debug("Challenge: " + challenge +
@@ -1146,11 +1102,9 @@ init_msg = function() {
                 break;
             case 1:  // failed
                 if (rfb_version >= 3.8) {
-                    reason_len = rQshift32();
-                    if (rQlen() < reason_len) {
-                        debug("   waiting for SecurityResult reason bytes");
-                        rQi -= 8; // Unshift the status and length
-                        return;
+                    length = rQshift32();
+                    if (rQwait("SecurityResult reason", length, 8)) {
+                        return false;
                     }
                     reason = rQshiftStr(reason_len);
                     updateState('failed', reason);
@@ -1195,9 +1149,6 @@ init_msg = function() {
         canvas.resize(fb_width, fb_height);
         canvas.start(keyPress, mouseButton, mouseMove);
 
-        fb_Bpp           = 4;
-        fb_depth         = 3;
-
         response = pixelFormat();
         response = response.concat(clientEncodings());
         response = response.concat(fbUpdateRequest(0));
@@ -1238,19 +1189,11 @@ normal_msg = function() {
         break;
     case 3:  // ServerCutText
         debug("ServerCutText");
-        if (rQlen() < 7) {
-            //debug("waiting for ServerCutText header");
-            rQ--;
-            return false;
-        }
+        if (rQwait("ServerCutText header", 7, 1)) { return false; }
         rQshiftBytes(3);  // Padding
         length = rQshift32();
-        if (rQlen() < length) {
-            //debug("waiting for ServerCutText bytes");
-            rQ-=8;
-            return false;
-        }
-        debug("ServerCutText: " + rQshiftStr(length));
+        if (rQwait("ServerCutText", length, 8)) { return false; }
+        rQshiftStr(length); // Ignore it
         break;
     default:
         updateState('failed',
@@ -1262,16 +1205,15 @@ normal_msg = function() {
 };
 
 framebufferUpdate = function() {
-    var now, hdr, fbu_rt_diff, ret = true, ctx;
+    var now, h, fbu_rt_diff;
 
     if (FBU.rects === 0) {
-        if (rQlen() < 3) {
+        if (rQwait("FBU header", 3)) {
             if (rQi === 0) {
                 rQ.unshift(0);  // FBU msg_type
             } else {
                 rQi -= 1;
             }
-            //debug("   waiting for FBU header bytes");
             return false;
         }
         rQi++;
@@ -1283,33 +1225,26 @@ framebufferUpdate = function() {
         if (rfb_state !== "normal") {
             return false;
         }
-        if (rQlen() < FBU.bytes) {
-            //debug("   waiting for " + (FBU.bytes - rQlen()) + " FBU bytes");
-            return false;
-        }
+        if (rQwait("FBU")) { return false; }
         if (FBU.bytes === 0) {
-            if (rQlen() < 12) {
-                //debug("   waiting for rect header bytes");
-                return false;
-            }
+            if (rQwait("rect header", 12)) { return false; }
             /* New FramebufferUpdate */
 
-            hdr = rQshiftBytes(12);
-            FBU.x      = (hdr[0] << 8) + hdr[1];
-            FBU.y      = (hdr[2] << 8) + hdr[3];
-            FBU.width  = (hdr[4] << 8) + hdr[5];
-            FBU.height = (hdr[6] << 8) + hdr[7];
-            FBU.encoding = parseInt((hdr[8] << 24) + (hdr[9] << 16) +
-                                    (hdr[10] << 8) +  hdr[11], 10);
+            h = rQshiftBytes(12); // header
+            FBU.x      = (h[0]<<8)+h[1];
+            FBU.y      = (h[2]<<8)+h[3];
+            FBU.w      = (h[4]<<8)+h[5];
+            FBU.h      = (h[6]<<8)+h[7];
+            FBU.encoding = (h[8]<<24)+(h[9]<<16)+(h[10]<<8)+h[11];
 
-            if (encNames[FBU.encoding]) {
+            if (FBU.encoding in encHandlers) {
                 // Debug:
                 /*
                 var msg =  "FramebufferUpdate rects:" + FBU.rects;
                 msg += " x: " + FBU.x + " y: " + FBU.y;
-                msg += " width: " + FBU.width + " height: " + FBU.height;
+                msg += " width: " + FBU.w     + " height: " + FBU.h     ;
                 msg += " encoding:" + FBU.encoding;
-                msg += "(" + encNames[FBU.encoding] + ")";
+                msg += "(" + encNames[FBU.encoding.toString()] + ")";
                 msg += ", rQlen(): " + rQlen();
                 debug(msg);
                 */
@@ -1321,36 +1256,32 @@ framebufferUpdate = function() {
             }
         }
 
-        return encHandlers[FBU.encoding](); // false means need more data
+        if (! encHandlers[FBU.encoding]()) { return false; }
     }
-    return ret;
+    return true; // FBU finished
 };
 
 //
 // FramebufferUpdate encodings
 //
 
-encHandlers.RAW = function display_raw() {
+encHandlers[0] = function display_raw() {
     var cur_y, cur_height; 
 
     if (FBU.lines === 0) {
-        FBU.lines = FBU.height;
+        FBU.lines = FBU.h;
     }
-    FBU.bytes = FBU.width * fb_Bpp; // At least a line
-    if (rQlen() < FBU.bytes) {
-        //debug("   waiting for " +
-        //           (FBU.bytes - rQlen()) + " RAW bytes");
-        return false;
-    }
-    cur_y = FBU.y + (FBU.height - FBU.lines);
+    FBU.bytes = FBU.w * fb_Bpp; // At least a line
+    if (rQwait("RAW")) { return false; }
+    cur_y = FBU.y + (FBU.h - FBU.lines);
     cur_height = Math.min(FBU.lines,
-                          Math.floor(rQlen()/(FBU.width * fb_Bpp)));
-    canvas.blitImage(FBU.x, cur_y, FBU.width, cur_height, rQ, rQi);
-    rQshiftBytes(FBU.width * cur_height * fb_Bpp);
+                          Math.floor(rQlen()/(FBU.w * fb_Bpp)));
+    canvas.blitImage(FBU.x, cur_y, FBU.w, cur_height, rQ, rQi);
+    rQshiftBytes(FBU.w * cur_height * fb_Bpp);
     FBU.lines -= cur_height;
 
     if (FBU.lines > 0) {
-        FBU.bytes = FBU.width * fb_Bpp; // At least another line
+        FBU.bytes = FBU.w * fb_Bpp; // At least another line
     } else {
         FBU.rects -= 1;
         FBU.bytes = 0;
@@ -1358,29 +1289,25 @@ encHandlers.RAW = function display_raw() {
     return true;
 };
 
-encHandlers.COPYRECT = function display_copy_rect() {
+encHandlers[1] = function display_copy_rect() {
     var old_x, old_y;
 
-    if (rQlen() < 4) {
-        //debug("   waiting for " +
-        //           (FBU.bytes - rQlen()) + " COPYRECT bytes");
-        return false;
-    }
+    if (rQwait("COPYRECT", 4)) { return false; }
     old_x = rQshift16();
     old_y = rQshift16();
-    canvas.copyImage(old_x, old_y, FBU.x, FBU.y, FBU.width, FBU.height);
+    canvas.copyImage(old_x, old_y, FBU.x, FBU.y, FBU.w, FBU.h);
     FBU.rects -= 1;
     FBU.bytes = 0;
     return true;
 };
 
-encHandlers.HEXTILE = function display_hextile() {
+encHandlers[5] = function display_hextile() {
     var subencoding, subrects, tile, color, cur_tile,
         tile_x, x, w, tile_y, y, h, xy, s, sx, sy, wh, sw, sh;
 
     if (FBU.tiles === 0) {
-        FBU.tiles_x = Math.ceil(FBU.width/16);
-        FBU.tiles_y = Math.ceil(FBU.height/16);
+        FBU.tiles_x = Math.ceil(FBU.w/16);
+        FBU.tiles_y = Math.ceil(FBU.h/16);
         FBU.total_tiles = FBU.tiles_x * FBU.tiles_y;
         FBU.tiles = FBU.total_tiles;
     }
@@ -1388,10 +1315,7 @@ encHandlers.HEXTILE = function display_hextile() {
     /* FBU.bytes comes in as 1, rQlen() at least 1 */
     while (FBU.tiles > 0) {
         FBU.bytes = 1;
-        if (rQlen() < FBU.bytes) {
-            //debug("   waiting for HEXTILE subencoding byte");
-            return false;
-        }
+        if (rQwait("HEXTILE subencoding")) { return false; }
         subencoding = rQ[rQi];  // Peek
         if (subencoding > 30) { // Raw
             updateState('failed',
@@ -1404,8 +1328,8 @@ encHandlers.HEXTILE = function display_hextile() {
         tile_y = Math.floor(cur_tile / FBU.tiles_x);
         x = FBU.x + tile_x * 16;
         y = FBU.y + tile_y * 16;
-        w = Math.min(16, (FBU.x + FBU.width) - x);
-        h = Math.min(16, (FBU.y + FBU.height) - y);
+        w = Math.min(16, (FBU.x + FBU.w) - x);
+        h = Math.min(16, (FBU.y + FBU.h) - y);
 
         /* Figure out how much we are expecting */
         if (subencoding & 0x01) { // Raw
@@ -1418,11 +1342,8 @@ encHandlers.HEXTILE = function display_hextile() {
                 FBU.bytes += fb_Bpp;
             }
             if (subencoding & 0x08) { // AnySubrects
-                FBU.bytes += 1;   // Since we aren't shifting it off
-                if (rQlen() < FBU.bytes) {
-                    //debug("   waiting for hextile subrects header byte");
-                    return false;
-                }
+                FBU.bytes++;   // Since we aren't shifting it off
+                if (rQwait("hextile subrects header")) { return false; }
                 subrects = rQ[rQi + FBU.bytes-1]; // Peek
                 if (subencoding & 0x10) { // SubrectsColoured
                     FBU.bytes += subrects * (fb_Bpp + 2);
@@ -1432,18 +1353,12 @@ encHandlers.HEXTILE = function display_hextile() {
             }
         }
 
-        if (rQlen() < FBU.bytes) {
-            //debug("   waiting for " +
-            //           (FBU.bytes - rQlen()) + " hextile bytes");
-            return false;
-        }
+        if (rQwait("hextile")) { return false; }
 
         /* We know the encoding and have a whole tile */
-        FBU.subencoding = rQ[rQi];
-        rQi += 1;
+        FBU.subencoding = rQ[rQi++];
         if (FBU.subencoding === 0) {
             if (FBU.lastsubencoding & 0x01) {
-                /* Weird: ignore blanks after RAW */
                 debug("     Ignoring blank after RAW");
             } else {
                 canvas.fillRect(x, y, w, h, FBU.background);
@@ -1463,31 +1378,22 @@ encHandlers.HEXTILE = function display_hextile() {
 
             tile = canvas.getTile(x, y, w, h, FBU.background);
             if (FBU.subencoding & 0x08) { // AnySubrects
-                subrects = rQ[rQi];
-                rQi += 1;
-                for (s = 0; s < subrects; s += 1) {
+                subrects = rQ[rQi++];
+                for (s = 0; s < subrects; s++) {
                     if (FBU.subencoding & 0x10) { // SubrectsColoured
                         color = rQ.slice(rQi, rQi + fb_Bpp);
                         rQi += fb_Bpp;
                     } else {
                         color = FBU.foreground;
                     }
-                    xy = rQ[rQi];
-                    rQi += 1;
-                    sx = (xy >> 4);
-                    sy = (xy & 0x0f);
 
-                    wh = rQ[rQi];
-                    rQi += 1;
-                    sw = (wh >> 4)   + 1;
-                    sh = (wh & 0x0f) + 1;
-
+                    xy = rQ[rQi++]; sx = (xy>>4);   sy = (xy&0xf);
+                    wh = rQ[rQi++]; sw = (wh>>4)+1; sh = (wh&0xf)+1;
                     canvas.setSubTile(tile, sx, sy, sw, sh, color);
                 }
             }
             canvas.putTile(tile);
         }
-        //rQshiftBytes(FBU.bytes);
         FBU.lastsubencoding = FBU.subencoding;
         FBU.bytes = 0;
         FBU.tiles -= 1;
@@ -1499,90 +1405,19 @@ encHandlers.HEXTILE = function display_hextile() {
     return true;
 };
 
-encHandlers.DesktopSize = function set_desktopsize() {
+encHandlers[-223] = function set_desktopsize() {
     debug(">> set_desktopsize");
-    fb_width = FBU.width;
-    fb_height = FBU.height;
+    fb_width = FBU.w;
+    fb_height = FBU.h;
     canvas.clear();
     canvas.resize(fb_width, fb_height);
-    // Send a new non-incremental request
-    send_array(fbUpdateRequest(0));
+    send_array(fbUpdateRequest(0)); // New non-incremental request
 
     FBU.bytes = 0;
     FBU.rects -= 1;
 
     debug("<< set_desktopsize");
     return true;
-};
-
-/*
- * Client message routines
- */
-
-pixelFormat = function() {
-    var arr = [0, 0, 0, 0]; // msg-type
-
-    arr.push8(fb_Bpp * 8); // bits-per-pixel
-    arr.push8(fb_depth * 8); // depth
-    arr.push8(0);  // little-endian
-    arr.push8(1);  // true-color
-
-    arr.push16(255);  // red-max
-    arr.push16(255);  // green-max
-    arr.push16(255);  // blue-max
-    arr.push8(0);     // red-shift
-    arr.push8(8);     // green-shift
-    arr.push8(16);    // blue-shift
-
-    arr.push8(0);     // padding
-    arr.push8(0);     // padding
-    arr.push8(0);     // padding
-    return arr;
-};
-
-clientEncodings = function() {
-    var arr = [2, 0], i, encList = [];
-
-    for (i=0; i<encodings.length; i += 1) {
-        if ((encodings[i][0] === "Cursor") &&
-            (! conf.local_cursor)) {
-            debug("Skipping Cursor pseudo-encoding");
-        } else {
-            encList.push(encodings[i][1]);
-        }
-    }
-
-    arr.push16(encList.length); // encoding count
-    for (i=0; i < encList.length; i += 1) {
-        arr.push32(encList[i]);
-    }
-    return arr;
-};
-
-fbUpdateRequest = function(incremental, x, y, xw, yw) {
-    var arr = [3, incremental];
-    if (!x) { x = 0; }
-    if (!y) { y = 0; }
-    if (!xw) { xw = fb_width; }
-    if (!yw) { yw = fb_height; }
-    arr.push16(x);
-    arr.push16(y);
-    arr.push16(xw);
-    arr.push16(yw);
-    return arr;
-};
-
-keyEvent = function(keysym, down) {
-    var arr = [4, down, 0, 0];
-    arr.push32(keysym);
-    return arr;
-};
-
-pointerEvent = function(x, y) {
-    var arr = [5, mouse_buttonMask];
-    arr.push16(x);
-    arr.push16(y);
-    return arr;
 };
 
 //
@@ -1598,7 +1433,6 @@ that.connect = function(host, port, password) {
         updateState('failed', "Must set host and port");
         return;
     }
-
     updateState('connect');
 };
 
@@ -1659,7 +1493,22 @@ that.testMode = function(override_send_array) {
 };
 
 
-return constructor();  // Return the public API interface
+// Sanity checks and initialization
+try {
+    canvas = new Canvas({'target': conf.target,
+                         'focusContainer': conf.focusContainer});
+} catch (exc) {
+    error("Canvas exception: " + exc);
+    updateState('fatal', "No working Canvas");
+}
+if (!window.WebSocket) {
+    updateState('fatal', "Native WebSockets support is required");
+}
+
+init_vars();
+updateState('loaded', 'noVNC ready: native WebSockets, ' + 
+    canvas.conf.render_mode);
+return that;  // Return the public API interface
 
 }  // End of RFB()
 
