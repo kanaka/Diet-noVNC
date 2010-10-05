@@ -11,7 +11,11 @@
 /*global window, console, document, navigator, WebSocket, ActiveXObject, DES */
 
 // Globals defined here
-var log_level, debug, info, warn, error, stub, Features, Engine;
+var log_level =  (document.location.href.match(
+                  /logging=([A-Za-z0-9\._\-]*)/) ||
+                  ['', 'warn'])[1],
+    gecko, stub = function(m) {}, 
+    debug = stub, info = stub, warn = stub, error = stub;
 
 // -------------------------------------------------------------------
 // Utilities
@@ -29,14 +33,9 @@ Array.prototype.push32 = function (n) {
 };
 
 // Logging/debug routines
-debug = info = warn = error = stub = function(m) {};
-log_level =  (document.location.href.match(
-                    /logging=([A-Za-z0-9\._\-]*)/) ||
-                    ['', 'warn'])[1];
 if (typeof window.console === "undefined") {
     window.console = {'log': stub, 'warn': stub, 'error': stub};
 }
-
 switch (log_level) {
     case 'debug': debug = function (msg) { console.log(msg); };
     case 'info':  info  = function (msg) { console.log(msg); };
@@ -46,21 +45,8 @@ switch (log_level) {
     default:      throw("invalid logging type '" + log_level + "'");
 }
 
-// Set browser engine versions. Based on mootools.
-Features = {xpath: !!(document.evaluate),
-            air: !!(window.runtime),
-            query: !!(document.querySelector)};
-
-Engine = {
-    'presto': (function() {
-            return (!window.opera) ? false : ((arguments.callee.caller) ? 960 : ((document.getElementsByClassName) ? 950 : 925)); }()),
-    'trident': (function() {
-            return (!window.ActiveXObject) ? false : ((window.XMLHttpRequest) ? ((document.querySelectorAll) ? 6 : 5) : 4); }()),
-    'webkit': (function() {
-            try { return (navigator.taintEnabled) ? false : ((Features.xpath) ? ((Features.query) ? 525 : 420) : 419); } catch (e) { return false; } }()),
-    'gecko': (function() {
-            return (!document.getBoxObjectFor && window.mozInnerScreenX == null) ? false : ((document.getElementsByClassName) ? 19 : 18); }())
-};
+// Detect gecko engine (code from mootools).
+gecko = (function() { return (!document.getBoxObjectFor && window.mozInnerScreenX == null) ? false : ((document.getElementsByClassName) ? 19 : 18); }());
 
 
 // VNC Canvas drawing area
@@ -70,7 +56,6 @@ var that           = {},         // Public API interface
 
     // Private Canvas namespace variables
     c_width        = 0, c_height       = 0,
-    c_prevStyle    = "",
     c_keyPress = null, c_mouseButton = null, c_mouseMove = null;
 
 // Configuration settings
@@ -100,7 +85,7 @@ function getKeysym(e) {
     map2 = {
         186: 59, 187: 61, 188: 44, 189: 45, 190: 46, 191: 47,
         192: 96, 219: 91, 220: 92, 221: 93, 222: 39 };
-    if (Engine.gecko) { map2[109] = 45; }
+    if (gecko) { map2[109] = 45; }
 
     map3 = {
         48: 41, 49: 33, 50: 64, 51: 35, 52: 36, 53: 37, 54: 94,
@@ -128,8 +113,7 @@ function getKeysym(e) {
 
 // Cross-browser mouse event position within DOM element
 function getEventPosition(e, obj) {
-    var evt, docX, docY, x = 0, y = 0;
-    evt = (e ? e : window.event);
+    var evt = (e ? e : window.event), docX, docY, x = 0, y = 0;
     if (evt.pageX || evt.pageY) {
         docX = evt.pageX;
         docY = evt.pageY;
@@ -177,14 +161,12 @@ function stopEvent(e) {
 
 
 function onMouseButton(e, down) {
-    var evt, pos, bmask;
+    var evt = (e ? e : window.event), pos, bmask;
     if (! conf.focused) {
         return true;
     }
-    evt = (e ? e : window.event);
     pos = getEventPosition(e, conf.target);
     bmask = 1 << evt.button;
-    //debug('mouse ' + pos.x + "," + pos.y + " down: " + down + " bmask: " + bmask);
     if (c_mouseButton) {
         c_mouseButton(pos.x, pos.y, down, bmask);
     }
@@ -201,8 +183,7 @@ function onMouseUp(e) {
 }
 
 function onMouseWheel(e) {
-    var evt, pos, bmask, wheelData;
-    evt = (e ? e : window.event);
+    var evt = (e ? e : window.event), pos, bmask, wheelData;
     pos = getEventPosition(e, conf.target);
     wheelData = evt.detail ? evt.detail * -1 : evt.wheelDelta / 40;
     if (wheelData > 0) {
@@ -210,7 +191,6 @@ function onMouseWheel(e) {
     } else {
         bmask = 1 << 4;
     }
-    //debug('mouse scroll by ' + wheelData + ':' + pos.x + "," + pos.y);
     if (c_mouseButton) {
         c_mouseButton(pos.x, pos.y, 1, bmask);
         c_mouseButton(pos.x, pos.y, 0, bmask);
@@ -220,10 +200,8 @@ function onMouseWheel(e) {
 }
 
 function onMouseMove(e) {
-    var evt, pos;
-    evt = (e ? e : window.event);
+    var evt = (e ? e : window.event), pos;
     pos = getEventPosition(e, conf.target);
-    //debug('mouse ' + evt.which + '/' + evt.button + ' up:' + pos.x + "," + pos.y);
     if (c_mouseMove) {
         c_mouseMove(pos.x, pos.y);
     }
@@ -244,18 +222,15 @@ function onKeyUp(e) {
 }
 
 function onMouseDisable(e) {
-    var evt, pos;
+    var evt = (e ? e : window.event), pos;
     if (! conf.focused) { return true; }
-    evt = (e ? e : window.event);
     pos = getEventPosition(e, conf.target);
     // Stop propagation if inside canvas area
     if ((pos.x >= 0) && (pos.y >= 0) &&
         (pos.x < c_width) && (pos.y < c_height)) {
-        //debug("mouse event disabled");
         stopEvent(e);
         return false;
     }
-    //debug("mouse event not disabled");
     return true;
 }
 
@@ -281,7 +256,7 @@ that.start = function(keyPressFunc, mouseButtonFunc, mouseMoveFunc) {
     addEvent(c, 'mousedown', onMouseDown);
     addEvent(c, 'mouseup', onMouseUp);
     addEvent(c, 'mousemove', onMouseMove);
-    addEvent(c, (Engine.gecko) ? 'DOMMouseScroll' : 'mousewheel',
+    addEvent(c, (gecko) ? 'DOMMouseScroll' : 'mousewheel',
             onMouseWheel);
 
     // Work around right and middle click browser behaviors
@@ -313,8 +288,7 @@ that.stop = function() {
     removeEvent(c, 'mousedown', onMouseDown);
     removeEvent(c, 'mouseup', onMouseUp);
     removeEvent(c, 'mousemove', onMouseMove);
-    removeEvent(c, (Engine.gecko) ? 'DOMMouseScroll' : 'mousewheel',
-            onMouseWheel);
+    removeEvent(c, gecko?'DOMMouseScroll':'mousewheel', onMouseWheel);
 
     // Work around right and middle click browser behaviors
     removeEvent(conf.focusContainer, 'click', onMouseDisable);
@@ -322,10 +296,7 @@ that.stop = function() {
 };
 
 that.fillRect = function(x, y, width, height, c) {
-    var newStyle = "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
-    if (newStyle !== c_prevStyle) {
-        conf.ctx.fillStyle = c_prevStyle = newStyle;
-    }
+    conf.ctx.fillStyle = "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
     conf.ctx.fillRect(x, y, width, height);
 };
 
@@ -401,9 +372,7 @@ var that           = {},         // Public API interface
     // Pre-declare private functions used before definitions (jslint)
     updateState, init_msg, normal_msg, recv_message, framebufferUpdate,
 
-    //
     // Private RFB namespace variables
-    //
     rfb_host       = '',
     rfb_port       = 5900,
     rfb_password   = '',

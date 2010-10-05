@@ -21,6 +21,7 @@ Connect parameters are provided in query string:
         #controls input { width: 80px; }
         #screen  { display: table; }
         #top_bar { margin-top: 5px; }
+        #npwd    { margin-bottom: 0px; }
         .sNormal { background: #eee; }
         .sError  { background: #f44; }
         .sWarn   { background: #ff4; }
@@ -57,10 +58,9 @@ Connect parameters are provided in query string:
     var rfb;
 
     // Read a query string variable
-    function getQueryVar(name, defVal) {
+    function getVar(name) {
         var re = new RegExp('[?][^#]*' + name + '=([^&#]*)');
-        if (typeof defVal === 'undefined') { defVal = null; }
-        return (document.location.href.match(re) || ['',defVal])[1];
+        return (document.location.href.match(re) || ['', null])[1];
     }
 
     // Simple DOM selector by ID
@@ -94,8 +94,7 @@ Connect parameters are provided in query string:
             c.disabled = true;
         }
         if (state === 'password') {
-            msg = '<form onsubmit="return setPassword();"';
-            msg += '  style="margin-bottom: 0px">';
+            msg = '<form id="npwd" onsubmit="return setPassword();">';
             msg += 'Password Required: ';
             msg += '<input type=password size=10 id="new_passwd" class="status">';
             msg += '<\/form>';
@@ -119,16 +118,14 @@ Connect parameters are provided in query string:
     window.onload = function () {
         $('cadBtn').onclick = sendCtrlAltDel;
 
-        $('host').value = getQueryVar('host', null);
-        $('port').value = getQueryVar('port', null);
-        $('passwd').value = getQueryVar('password', '');
+        $('host').value = getVar('host');
+        $('port').value = getVar('port');
+        $('passwd').value = getVar('password');
 
         rfb = new RFB({'target':      $('vnc'),
-                       'encrypt':     getQueryVar('encrypt', false),
+                       'encrypt':     getVar('encrypt'),
                        'updateState': updateState});
     };
     </script>
-
 </body>
-
 </html>
