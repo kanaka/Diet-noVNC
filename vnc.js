@@ -2,23 +2,18 @@
  * Diet noVNC: noVNC (HTML5 VNC client) but without the sugar.
  * Copyright (C) 2010 Joel Martin
  * Licensed under LGPL-3 (see LICENSE.txt)
- *
- * See README.md for usage and integration instructions.
  */
 
 "use strict";
 /*jslint browser: true, bitwise: false, white: false, plusplus: false */
-/*global window, console, document, navigator, WebSocket, ActiveXObject, DES */
+/*global window, console, document, WebSocket */
 
-// Globals defined here
 var log_level =  (document.location.href.match(
                   /logging=([a-z]*)/) || ['', 'warn'])[1],
-    gecko, stub = function(m) {}, 
-    debug = stub, info = stub, warn = stub, error = stub;
+    DES, gecko, stub = function(m) {}, 
+   debug = stub, info = stub, warn = stub, error = stub;
 
-// -------------------------------------------------------------------
-// Utilities
-// -------------------------------------------------------------------
+// --- Utilities -----------------------------------------------------
 
 // Make arrays quack
 Array.prototype.push8 = function (n) {
@@ -347,10 +342,9 @@ that.blitImage = function(x, y, width, height, arr, offset) {
 };
 
 // Sanity checks, and initialization
-var c = conf.target;
-if (! c) { throw("target must be set"); }
-if (! c.getContext) { throw("no getContext method"); }
-conf.ctx = c.getContext('2d');
+if (! conf.target) { throw("target must be set"); }
+if (! conf.target.getContext) { throw("no getContext method"); }
+conf.ctx = conf.target.getContext('2d');
 if (! conf.ctx.createImageData) { throw("no createImageData method"); }
 
 that.clear();
@@ -361,15 +355,15 @@ return that;  // Return the public API interface
 }  // End of Canvas()
 
 
-// -------------------------------------------------------------------
-// VNC/RFB core code
-// -------------------------------------------------------------------
+// --- VNC/RFB core code ---------------------------------------------
+
 function RFB(conf) {
 
 var that           = {},         // Public API interface
 
     // Pre-declare private functions used before definitions (jslint)
-    updateState, init_msg, normal_msg, recv_message, framebufferUpdate,
+    init_ws, init_msg, normal_msg, recv_message, framebufferUpdate,
+    fbUpdateRequest, checkEvents, keyEvent, pointerEvent,
 
     // Private RFB namespace variables
     rfb_host       = '',
@@ -378,7 +372,6 @@ var that           = {},         // Public API interface
 
     rfb_state      = 'disconnected',
     rfb_version    = 0,
-    rfb_max_version= 3.8,
     rfb_auth_scheme= '',
     rfb_shared     = 1,
 
@@ -451,6 +444,18 @@ cdef('updateState',       function() {}, 'callback: state update');
 // Private functions
 //
 
+function init_vars() {
+    /* Reset state */
+    rQ               = [];
+    rQi              = 0;
+    sQ               = "";
+    FBU.rects        = 0;
+    FBU.lines        = 0;  // RAW
+    FBU.tiles        = 0;  // HEXTILE
+    mouse_buttonMask = 0;
+    mouse_arr        = [];
+}
+
 // Receive Queue functions
 function rQlen() {
     return rQ.length - rQi;
@@ -499,61 +504,6 @@ function rQwait(msg, num, goback) {
 }
 
 
-// Setup routines
-
-function init_ws() {
-    var uri = "";
-    if (conf.encrypt) {
-        uri = "wss://";
-    } else {
-        uri = "ws://";
-    }
-    uri += rfb_host + ":" + rfb_port + "/";
-    info("connecting to " + uri);
-    ws = new WebSocket(uri);
-
-    ws.onmessage = recv_message;
-    ws.onopen = function(e) {
-        debug(">> WebSocket.onopen");
-        if (rfb_state === "connect") {
-            updateState('ProtocolVersion', "Starting VNC handshake");
-        } else {
-            updateState('failed', "Got unexpected WebSockets connection");
-        }
-        debug("<< WebSocket.onopen");
-    };
-    ws.onclose = function(e) {
-        debug(">> WebSocket.onclose");
-        if (rfb_state === 'disconnect') {
-            updateState('disconnected', 'VNC disconnected');
-        } else if (rfb_state === 'ProtocolVersion') {
-            updateState('failed', 'Failed to connect to server');
-        } else if (rfb_state in {'failed':1, 'disconnected':1}) {
-            error("Received onclose while disconnected");
-        } else  {
-            updateState('failed', 'Server disconnected');
-        }
-        debug("<< WebSocket.onclose");
-    };
-    ws.onerror = function(e) {
-        debug(">> WebSocket.onerror");
-        updateState('failed', "WebSocket error");
-        debug("<< WebSocket.onerror");
-    };
-}
-
-init_vars = function() {
-    /* Reset state */
-    rQ               = [];
-    rQi              = 0;
-    sQ               = "";
-    FBU.rects        = 0;
-    FBU.lines        = 0;  // RAW
-    FBU.tiles        = 0;  // HEXTILE
-    mouse_buttonMask = 0;
-    mouse_arr        = [];
-};
-
 //
 // Utility routines
 //
@@ -579,7 +529,7 @@ init_vars = function() {
  *   SecurityResult
  *   ServerInitialization
  */
-updateState = function(state, statusMsg) {
+function updateState(state, statusMsg) {
     var func, cmsg, oldstate = rfb_state;
 
     if (state === oldstate) {
@@ -671,7 +621,7 @@ updateState = function(state, statusMsg) {
     } else {
         conf.updateState(that, state, oldstate, statusMsg);
     }
-};
+}
 
 /* base64 encode */
 function encode_message(arr) {
@@ -755,7 +705,7 @@ recv_message = function(e) {
 };
 
 // overridable for testing
-send_array = function(arr) {
+function send_array(arr) {
     encode_message(arr);
     if (ws.bufferedAmount === 0) {
         ws.send(sQ);
@@ -763,7 +713,7 @@ send_array = function(arr) {
     } else {
         debug("Delaying send");
     }
-};
+}
 
 function send_string(str) {
     send_array(str.split('').map(
@@ -829,11 +779,52 @@ function mouseMove(x, y) {
     mouse_arr = mouse_arr.concat( pointerEvent(x, y) );
 }
 
-/*
- * Client message routines
- */
+// Setup routines
 
-pixelFormat = function() {
+init_ws = function() {
+    var uri = "";
+    if (conf.encrypt) {
+        uri = "wss://";
+    } else {
+        uri = "ws://";
+    }
+    uri += rfb_host + ":" + rfb_port + "/";
+    info("connecting to " + uri);
+    ws = new WebSocket(uri);
+
+    ws.onmessage = recv_message;
+    ws.onopen = function(e) {
+        debug(">> WebSocket.onopen");
+        if (rfb_state === "connect") {
+            updateState('ProtocolVersion', "Starting VNC handshake");
+        } else {
+            updateState('failed', "Got unexpected WebSockets connection");
+        }
+        debug("<< WebSocket.onopen");
+    };
+    ws.onclose = function(e) {
+        debug(">> WebSocket.onclose");
+        if (rfb_state === 'disconnect') {
+            updateState('disconnected', 'VNC disconnected');
+        } else if (rfb_state === 'ProtocolVersion') {
+            updateState('failed', 'Failed to connect to server');
+        } else if (rfb_state in {'failed':1, 'disconnected':1}) {
+            error("Received onclose while disconnected");
+        } else  {
+            updateState('failed', 'Server disconnected');
+        }
+        debug("<< WebSocket.onclose");
+    };
+    ws.onerror = function(e) {
+        debug(">> WebSocket.onerror");
+        updateState('failed', "WebSocket error");
+        debug("<< WebSocket.onerror");
+    };
+};
+
+// Client message routines
+
+function pixelFormat() {
     var arr = [0, 0, 0, 0]; // msg-type, padding
 
     arr = arr.concat(fb_Bpp*8, fb_depth*8); // bpp, depth
@@ -846,16 +837,15 @@ pixelFormat = function() {
 
     arr = arr.concat(0, 0, 0);     // padding
     return arr;
-};
+}
 
-clientEncodings = function() {
-    var arr = [2, 0], e;
+function clientEncodings() {
+    var i, arr = [2, 0], e;
 
     arr.push16(encList.length); // encoding count
     for (i=0; i<encList.length; i++) { arr.push32(encList[i]); }
-    debug("here3: arr: " + arr + " (" + arr.length + ")");
     return arr;
-};
+}
 
 fbUpdateRequest = function(incremental, x, y, xw, yw) {
     var arr = [3, incremental];
@@ -884,15 +874,13 @@ pointerEvent = function(x, y) {
 };
 
 
-//
 // Server message handlers
-//
 
 // RFB/VNC initialisation message handler
 init_msg = function() {
-    var strlen, reason, reason_len, sversion, cversion,
+    var strlen, reason, length, sversion, cversion,
         i, types, num_types, challenge, response, bpp, true_color,
-        depth, big_endian, name_length;
+        depth, big_endian;
 
     switch (rfb_state) {
 
@@ -913,9 +901,6 @@ init_msg = function() {
                 updateState('failed',
                         "Invalid server version " + sversion);
                 return;
-        }
-        if (rfb_version > rfb_max_version) { 
-            rfb_version = rfb_max_version;
         }
 
         if (! test_mode) {
@@ -1029,7 +1014,7 @@ init_msg = function() {
                     if (rQwait("SecurityResult reason", length, 8)) {
                         return false;
                     }
-                    reason = rQshiftStr(reason_len);
+                    reason = rQshiftStr(length);
                     updateState('failed', reason);
                 } else {
                     updateState('failed', "Authentication failed");
@@ -1066,8 +1051,8 @@ init_msg = function() {
 
         /* Connection name/title */
         rQshiftStr(12);
-        name_length   = rQshift32();
-        fb_name = rQshiftStr(name_length);
+        length   = rQshift32();
+        fb_name = rQshiftStr(length);
 
         canvas.resize(fb_width, fb_height);
         canvas.start(keyPress, mouseButton, mouseMove);
@@ -1092,11 +1077,10 @@ init_msg = function() {
 
 /* Normal RFB/VNC server message handler */
 normal_msg = function() {
-    var msg_type = (FBU.rects === 0) ? rQ[rQi++] : 0;
+    var length, msg_type = (FBU.rects === 0) ? rQ[rQi++] : 0;
     switch (msg_type) {
     case 0:  // FramebufferUpdate
         return framebufferUpdate(); // false means need more data
-        break;
     case 1:  // SetColourMapEntries
         updateState('failed', "Error: got SetColourMapEntries");
         break;
@@ -1106,7 +1090,7 @@ normal_msg = function() {
     case 3:  // ServerCutText
         if (rQwait("ServerCutText header", 7, 1)) { return false; }
         rQshiftBytes(3);  // Padding
-        var length = rQshift32();
+        length = rQshift32();
         if (rQwait("ServerCutText", length, 8)) { return false; }
         debug("ServerCutText: " + rQshiftStr(length));
         break;
@@ -1415,116 +1399,94 @@ return that;  // Return the public API interface
 }  // End of RFB()
 
 
-// -------------------------------------------------------------------
-// 16-byte DES implementation:
-//     Copyright (C) 1999 AT&T Laboratories Cambridge.  All Rights Reserved.
-//     Copyright (c) 1996 Widget Workshop, Inc. All Rights Reserved.
-//     Copyright (C) 1996 by Jef Poskanzer <jef@acme.com>.  All rights reserved.
-//
-// See docs/LICENSE.DES for full copyright and license
-// -------------------------------------------------------------------
-function DES(passwd) {
+// --- 16-byte DES --------------------------------------------------
+//     Copyright (C) 1999 AT&T Laboratories Cambridge
+//     Copyright (c) 1996 Widget Workshop, Inc
+//     Copyright (C) 1996 by Jef Poskanzer <jef@acme.com>
+// See docs/LICENSE.DES for full license/copyright
 
-// Tables, permutations, S-boxes, etc.
-var PC2 = [13,16,10,23, 0, 4, 2,27,14, 5,20, 9,22,18,11, 3,
-           25, 7,15, 6,26,19,12, 1,40,51,30,36,46,54,29,39,
-           50,44,32,47,43,48,38,55,33,52,45,41,49,35,28,31 ],
-    totrot = [ 1, 2, 4, 6, 8,10,12,14,15,17,19,21,23,25,27,28],
-    z = 0x0, a,b,c,d,e,f, SP1,SP2,SP3,SP4,SP5,SP6,SP7,SP8,
-    keys = [];
+DES = function(passwd) {
 
-a=1<<16; b=1<<24; c=a|b; d=1<<2; e=1<<10; f=d|e;
-SP1 = [c|e,z|z,a|z,c|f,c|d,a|f,z|d,a|z,z|e,c|e,c|f,z|e,b|f,c|d,b|z,z|d,
-       z|f,b|e,b|e,a|e,a|e,c|z,c|z,b|f,a|d,b|d,b|d,a|d,z|z,z|f,a|f,b|z,
-       a|z,c|f,z|d,c|z,c|e,b|z,b|z,z|e,c|d,a|z,a|e,b|d,z|e,z|d,b|f,a|f,
-       c|f,a|d,c|z,b|f,b|d,z|f,a|f,c|e,z|f,b|e,b|e,z|z,a|d,a|e,z|z,c|d];
-a=1<<20; b=1<<31; c=a|b; d=1<<5; e=1<<15; f=d|e;
-SP2 = [c|f,b|e,z|e,a|f,a|z,z|d,c|d,b|f,b|d,c|f,c|e,b|z,b|e,a|z,z|d,c|d,
-       a|e,a|d,b|f,z|z,b|z,z|e,a|f,c|z,a|d,b|d,z|z,a|e,z|f,c|e,c|z,z|f,
-       z|z,a|f,c|d,a|z,b|f,c|z,c|e,z|e,c|z,b|e,z|d,c|f,a|f,z|d,z|e,b|z,
-       z|f,c|e,a|z,b|d,a|d,b|f,b|d,a|d,a|e,z|z,b|e,z|f,b|z,c|d,c|f,a|e];
-a=1<<17; b=1<<27; c=a|b; d=1<<3; e=1<<9; f=d|e;
-SP3 = [z|f,c|e,z|z,c|d,b|e,z|z,a|f,b|e,a|d,b|d,b|d,a|z,c|f,a|d,c|z,z|f,
-       b|z,z|d,c|e,z|e,a|e,c|z,c|d,a|f,b|f,a|e,a|z,b|f,z|d,c|f,z|e,b|z,
-       c|e,b|z,a|d,z|f,a|z,c|e,b|e,z|z,z|e,a|d,c|f,b|e,b|d,z|e,z|z,c|d,
-       b|f,a|z,b|z,c|f,z|d,a|f,a|e,b|d,c|z,b|f,z|f,c|z,a|f,z|d,c|d,a|e];
-a=1<<13; b=1<<23; c=a|b; d=1<<0; e=1<<7; f=d|e;
-SP4 = [c|d,a|f,a|f,z|e,c|e,b|f,b|d,a|d,z|z,c|z,c|z,c|f,z|f,z|z,b|e,b|d,
-       z|d,a|z,b|z,c|d,z|e,b|z,a|d,a|e,b|f,z|d,a|e,b|e,a|z,c|e,c|f,z|f,
-       b|e,b|d,c|z,c|f,z|f,z|z,z|z,c|z,a|e,b|e,b|f,z|d,c|d,a|f,a|f,z|e,
-       c|f,z|f,z|d,a|z,b|d,a|d,c|e,b|f,a|d,a|e,b|z,c|d,z|e,b|z,a|z,c|e];
-a=1<<25; b=1<<30; c=a|b; d=1<<8; e=1<<19; f=d|e;
-SP5 = [z|d,a|f,a|e,c|d,z|e,z|d,b|z,a|e,b|f,z|e,a|d,b|f,c|d,c|e,z|f,b|z,
-       a|z,b|e,b|e,z|z,b|d,c|f,c|f,a|d,c|e,b|d,z|z,c|z,a|f,a|z,c|z,z|f,
-       z|e,c|d,z|d,a|z,b|z,a|e,c|d,b|f,a|d,b|z,c|e,a|f,b|f,z|d,a|z,c|e,
-       c|f,z|f,c|z,c|f,a|e,z|z,b|e,c|z,z|f,a|d,b|d,z|e,z|z,b|e,a|f,b|d];
-a=1<<22; b=1<<29; c=a|b; d=1<<4; e=1<<14; f=d|e;
-SP6 = [b|d,c|z,z|e,c|f,c|z,z|d,c|f,a|z,b|e,a|f,a|z,b|d,a|d,b|e,b|z,z|f,
-       z|z,a|d,b|f,z|e,a|e,b|f,z|d,c|d,c|d,z|z,a|f,c|e,z|f,a|e,c|e,b|z,
-       b|e,z|d,c|d,a|e,c|f,a|z,z|f,b|d,a|z,b|e,b|z,z|f,b|d,c|f,a|e,c|z,
-       a|f,c|e,z|z,c|d,z|d,z|e,c|z,a|f,z|e,a|d,b|f,z|z,c|e,b|z,a|d,b|f];
-a=1<<21; b=1<<26; c=a|b; d=1<<1; e=1<<11; f=d|e;
-SP7 = [a|z,c|d,b|f,z|z,z|e,b|f,a|f,c|e,c|f,a|z,z|z,b|d,z|d,b|z,c|d,z|f,
-       b|e,a|f,a|d,b|e,b|d,c|z,c|e,a|d,c|z,z|e,z|f,c|f,a|e,z|d,b|z,a|e,
-       b|z,a|e,a|z,b|f,b|f,c|d,c|d,z|d,a|d,b|z,b|e,a|z,c|e,z|f,a|f,c|e,
-       z|f,b|d,c|f,c|z,a|e,z|z,z|d,c|f,z|z,a|f,c|z,z|e,b|d,b|e,z|e,a|d];
-a=1<<18; b=1<<28; c=a|b; d=1<<6; e=1<<12; f=d|e;
-SP8 = [b|f,z|e,a|z,c|f,b|z,b|f,z|d,b|z,a|d,c|z,c|f,a|e,c|e,a|f,z|e,z|d,
-       c|z,b|d,b|e,z|f,a|e,a|d,c|d,c|e,z|f,z|z,z|z,c|d,b|d,b|e,a|f,a|z,
-       a|f,a|z,c|e,z|e,z|d,c|d,z|e,a|f,b|e,z|d,b|d,c|z,c|d,b|z,a|z,b|f,
-       z|z,c|f,a|d,b|d,c|z,b|e,b|f,z|z,c|f,a|e,a|e,z|f,z|f,a|d,b|z,c|e];
+var PC2, totrot, i,j,l,m,n,o, pc1m = [], pcr = [], kn = [],
+    a,b,c,d,e,f, q,r,s,t,u,v,w,x,y, z = 0x0,
+    S1,S2,S3,S4,S5,S6,S7,S8, keys = [];
 
-// Set the key.
-function setKeys(keyBlock) {
-    var i, j, l, m, n, o, pc1m = [], pcr = [], kn = [],
-        raw0, raw1, rawi, KnLi;
+// Set the keys based on the passwd.
+PC2 = [13,16,10,23, 0, 4, 2,27,14, 5,20, 9,22,18,11, 3,
+      25, 7,15, 6,26,19,12, 1,40,51,30,36,46,54,29,39,
+      50,44,32,47,43,48,38,55,33,52,45,41,49,35,28,31 ];
+totrot = [ 1, 2, 4, 6, 8,10,12,14,15,17,19,21,23,25,27,28];
+for (j = 0, l = 56; j < 56; ++j, l-=8) {
+    l += l<-5 ? 65 : l<-3 ? 31 : l<-1 ? 63 : l===27 ? 35 : 0; // PC1
+    m = l & 0x7;
+    pc1m[j] = ((passwd[l >>> 3] & (1<<m)) !== 0) ? 1: 0;
+}
 
-    for (j = 0, l = 56; j < 56; ++j, l-=8) {
-        l += l<-5 ? 65 : l<-3 ? 31 : l<-1 ? 63 : l===27 ? 35 : 0; // PC1
-        m = l & 0x7;
-        pc1m[j] = ((keyBlock[l >>> 3] & (1<<m)) !== 0) ? 1: 0;
-    }
-
-    for (i = 0; i < 16; ++i) {
-        m = i << 1;
-        n = m + 1;
-        kn[m] = kn[n] = 0;
-        for (o=28; o<59; o+=28) {
-            for (j = o-28; j < o; ++j) {
-                l = j + totrot[i];
-                if (l < o) {
-                    pcr[j] = pc1m[l];
-                } else {
-                    pcr[j] = pc1m[l - 28];
-                }
-            }
-        }
-        for (j = 0; j < 24; ++j) {
-            if (pcr[PC2[j]] !== 0) {
-                kn[m] |= 1<<(23-j);
-            }
-            if (pcr[PC2[j + 24]] !== 0) {
-                kn[n] |= 1<<(23-j);
+for (i = 0; i < 16; ++i) {
+    m = i << 1;
+    n = m + 1;
+    kn[m] = kn[n] = 0;
+    for (o=28; o<59; o+=28) {
+        for (j = o-28; j < o; ++j) {
+            l = j + totrot[i];
+            if (l < o) {
+                pcr[j] = pc1m[l];
+            } else {
+                pcr[j] = pc1m[l - 28];
             }
         }
     }
-
-    // cookey
-    for (i = 0, rawi = 0, KnLi = 0; i < 16; ++i) {
-        raw0 = kn[rawi++];
-        raw1 = kn[rawi++];
-        keys[KnLi] = (raw0 & 0x00fc0000) << 6;
-        keys[KnLi] |= (raw0 & 0x00000fc0) << 10;
-        keys[KnLi] |= (raw1 & 0x00fc0000) >>> 10;
-        keys[KnLi] |= (raw1 & 0x00000fc0) >>> 6;
-        ++KnLi;
-        keys[KnLi] = (raw0 & 0x0003f000) << 12;
-        keys[KnLi] |= (raw0 & 0x0000003f) << 16;
-        keys[KnLi] |= (raw1 & 0x0003f000) >>> 4;
-        keys[KnLi] |= (raw1 & 0x0000003f);
-        ++KnLi;
+    for (j = 0; j < 24; ++j) {
+        if (pcr[PC2[j]] !== 0) {
+            kn[m] |= 1<<(23-j);
+        }
+        if (pcr[PC2[j + 24]] !== 0) {
+            kn[n] |= 1<<(23-j);
+        }
     }
 }
+// generate 32 24-bit subkeys
+for (i = 0; i < 32;) {
+    a = kn[i];
+    b = kn[i+1];
+    keys[i] = (a & 0x00fc0000) << 6;
+    keys[i] |= (a & 0x00000fc0) << 10;
+    keys[i] |= (b & 0x00fc0000) >>> 10;
+    keys[i++] |= (b & 0x00000fc0) >>> 6;
+    keys[i] = (a & 0x0003f000) << 12;
+    keys[i] |= (a & 0x0000003f) << 16;
+    keys[i] |= (b & 0x0003f000) >>> 4;
+    keys[i++] |= (b & 0x0000003f);
+}
+
+// Generate substitutions
+function mix(g,h,i,j) { a=1<<g; b=1<<h; c=a|b; d=1<<i; e=1<<j; f=d|e;
+    q=a|d;r=a|e;s=a|f; t=b|d;u=b|e;v=b|f; w=c|d;x=c|e;y=c|f; }
+mix(16,24,2,10);
+S1 = [x,z,a,y,w,s,d,a,e,x,y,e,v,w,b,d,f,u,u,r,r,c,c,v,q,t,t,q,z,f,s,b,
+      a,y,d,c,x,b,b,e,w,a,r,t,e,d,v,s,y,q,c,v,t,f,s,x,f,u,u,z,q,r,z,w];
+mix(20,31,5,15);
+S2 = [y,u,e,s,a,d,w,v,t,y,x,b,u,a,d,w,r,q,v,z,b,e,s,c,q,t,z,r,f,x,c,f,
+      z,s,w,a,v,c,x,e,c,u,d,y,s,d,e,b,f,x,a,t,q,v,t,q,r,z,u,f,b,w,y,r];
+mix(17,27,3,9);
+S3 = [f,x,z,w,u,z,s,u,q,t,t,a,y,q,c,f,b,d,x,e,r,c,w,s,v,r,a,v,d,y,e,b,
+      x,b,q,f,a,x,u,z,e,q,y,u,t,e,z,w,v,a,b,y,d,s,r,t,c,v,f,c,s,d,w,r];
+mix(13,23,0,7);
+S4 = [w,s,s,e,x,v,t,q,z,c,c,y,f,z,u,t,d,a,b,w,e,b,q,r,v,d,r,u,a,x,y,f,
+      u,t,c,y,f,z,z,c,r,u,v,d,w,s,s,e,y,f,d,a,t,q,x,v,q,r,b,w,e,b,a,x];
+mix(25,30,8,19);
+S5 = [d,s,r,w,e,d,b,r,v,e,q,v,w,x,f,b,a,u,u,z,t,y,y,q,x,t,z,c,s,a,c,f,
+      e,w,d,a,b,r,w,v,q,b,x,s,v,d,a,x,y,f,c,y,r,z,u,c,f,q,t,e,z,u,s,t];
+mix(22,29,4,14);
+S6 = [t,c,e,y,c,d,y,a,u,s,a,t,q,u,b,f,z,q,v,e,r,v,d,w,w,z,s,x,f,r,x,b,
+      u,d,w,r,y,a,f,t,a,u,b,f,t,y,r,c,s,x,z,w,d,e,c,s,e,q,v,z,x,b,q,v];
+mix(21,26,1,11);
+S7 = [a,w,v,z,e,v,s,x,y,a,z,t,d,b,w,f,u,s,q,u,t,c,x,q,c,e,f,y,r,d,b,r,
+      b,r,a,v,v,w,w,d,q,b,u,a,x,f,s,x,f,t,y,c,r,z,d,y,z,s,c,e,t,u,e,q];
+mix(18,28,6,12);
+S8 = [v,e,a,y,b,v,d,b,q,c,y,r,x,s,e,d,c,t,u,f,r,q,w,x,f,z,z,w,t,u,s,a,
+      s,a,x,e,d,w,e,s,u,d,t,c,w,b,a,v,z,y,q,t,c,u,v,z,y,r,r,f,f,q,b,x];
+
 
 // Encrypt 8 bytes of text
 function enc8(text) {
@@ -1556,27 +1518,27 @@ function enc8(text) {
     for (i = 0; i < 8; ++i) {
         x = (r << 28) | (r >>> 4);
         x ^= keys[keysi++];
-        fval =  SP7[x & 0x3f];
-        fval |= SP5[(x >>> 8) & 0x3f];
-        fval |= SP3[(x >>> 16) & 0x3f];
-        fval |= SP1[(x >>> 24) & 0x3f];
+        fval =  S7[x & 0x3f];
+        fval |= S5[(x >>> 8) & 0x3f];
+        fval |= S3[(x >>> 16) & 0x3f];
+        fval |= S1[(x >>> 24) & 0x3f];
         x = r ^ keys[keysi++];
-        fval |= SP8[x & 0x3f];
-        fval |= SP6[(x >>> 8) & 0x3f];
-        fval |= SP4[(x >>> 16) & 0x3f];
-        fval |= SP2[(x >>> 24) & 0x3f];
+        fval |= S8[x & 0x3f];
+        fval |= S6[(x >>> 8) & 0x3f];
+        fval |= S4[(x >>> 16) & 0x3f];
+        fval |= S2[(x >>> 24) & 0x3f];
         l ^= fval;
         x = (l << 28) | (l >>> 4);
         x ^= keys[keysi++];
-        fval =  SP7[x & 0x3f];
-        fval |= SP5[(x >>> 8) & 0x3f];
-        fval |= SP3[(x >>> 16) & 0x3f];
-        fval |= SP1[(x >>> 24) & 0x3f];
+        fval =  S7[x & 0x3f];
+        fval |= S5[(x >>> 8) & 0x3f];
+        fval |= S3[(x >>> 16) & 0x3f];
+        fval |= S1[(x >>> 24) & 0x3f];
         x = l ^ keys[keysi++];
-        fval |= SP8[x & 0x0000003f];
-        fval |= SP6[(x >>> 8) & 0x3f];
-        fval |= SP4[(x >>> 16) & 0x3f];
-        fval |= SP2[(x >>> 24) & 0x3f];
+        fval |= S8[x & 0x0000003f];
+        fval |= S6[(x >>> 8) & 0x3f];
+        fval |= S4[(x >>> 16) & 0x3f];
+        fval |= S2[(x >>> 24) & 0x3f];
         r ^= fval;
     }
 
@@ -1612,7 +1574,6 @@ function encrypt(t) {
     return enc8(t.slice(0,8)).concat(enc8(t.slice(8,16)));
 }
 
-setKeys(passwd);             // Setup keys
 return {'encrypt': encrypt}; // Public interface
 
-} // End of DES()
+}; // End of DES()
