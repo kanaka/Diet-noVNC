@@ -12,8 +12,7 @@
 
 // Globals defined here
 var log_level =  (document.location.href.match(
-                  /logging=([A-Za-z0-9\._\-]*)/) ||
-                  ['', 'warn'])[1],
+                  /logging=([a-z]*)/) || ['', 'warn'])[1],
     gecko, stub = function(m) {}, 
     debug = stub, info = stub, warn = stub, error = stub;
 
@@ -414,8 +413,8 @@ var that           = {},         // Public API interface
         lines          : 0,  // RAW
         tiles          : 0,  // HEXTILE
         bytes          : 0,
-        encoding       : 0,
-        subencoding    : -1,
+        enc            : 0,
+        subenc         : -1,
         background     : null
     },
 
@@ -446,8 +445,7 @@ cdef('connectTimeout',    2,    'Time (s) to wait for connection');
 cdef('disconnectTimeout', 3,    'Time (s) to wait for disconnection');
 cdef('check_rate',        217,  'Timing (ms) of send/receive check');
 cdef('fbu_req_rate',      1413, 'Timing (ms) of frameBufferUpdate requests');
-
-cdef('updateState', function() {}, 'callback: state update');
+cdef('updateState',       function() {}, 'callback: state update');
 
 //
 // Private functions
@@ -585,7 +583,6 @@ updateState = function(state, statusMsg) {
     var func, cmsg, oldstate = rfb_state;
 
     if (state === oldstate) {
-        /* Already here, ignore */
         debug("Already in state '" + state + "', ignoring.");
         return;
     }
@@ -596,15 +593,8 @@ updateState = function(state, statusMsg) {
      */
     if (state in {'disconnected':1, 'loaded':1, 'connect':1,
                   'disconnect':1, 'failed':1, 'fatal':1}) {
-        if (sendTimer) {
-            clearInterval(sendTimer);
-            sendTimer = null;
-        }
-
-        if (msgTimer) {
-            clearInterval(msgTimer);
-            msgTimer = null;
-        }
+        if (sendTimer) { sendTimer = clearInterval(sendTimer); }
+        if (msgTimer)  { msgTimer  = clearInterval(msgTimer); }
 
         if (canvas && canvas.getContext()) {
             canvas.stop();
@@ -628,16 +618,15 @@ updateState = function(state, statusMsg) {
     }
 
     if ((state === 'failed') || (state === 'fatal')) {
-        func = Error;
+        func = error;
     } else {
         func = warn;
     }
 
+    rfb_state = state;
     if ((oldstate === 'failed') && (state === 'disconnected')) {
         // Do disconnect action, but stay in failed state.
         rfb_state = 'failed';
-    } else {
-        rfb_state = state;
     }
 
     cmsg = typeof(statusMsg) !== 'undefined' ? (" Msg: " + statusMsg) : "";
@@ -645,70 +634,35 @@ updateState = function(state, statusMsg) {
 
     if (connTimer && (rfb_state !== 'connect')) {
         debug("Clearing connect timer");
-        clearInterval(connTimer);
-        connTimer = null;
+        connTimer = clearInterval(connTimer);
     }
 
     if (disconnTimer && (rfb_state !== 'disconnect')) {
         debug("Clearing disconnect timer");
-        clearInterval(disconnTimer);
-        disconnTimer = null;
+        disconnTimer = clearInterval(disconnTimer);
     }
 
     switch (state) {
-    case 'normal':
-        if ((oldstate === 'disconnected') || (oldstate === 'failed')) {
-            error("Invalid transition from 'disconnected' or 'failed' to 'normal'");
-        }
-
-        break;
-
-
     case 'connect':
-        
         connTimer = setTimeout(function () {
                 updateState('failed', "Connect timeout");
             }, conf.connectTimeout * 1000);
-
         init_vars();
         init_ws();
-
-        // WebSocket.onopen transitions to 'ProtocolVersion'
-        break;
-
+        break; // onopen transitions to 'ProtocolVersion'
 
     case 'disconnect':
-
         if (! test_mode) {
             disconnTimer = setTimeout(function () {
                     updateState('failed', "Disconnect timeout");
                 }, conf.disconnectTimeout * 1000);
         }
-
-        // WebSocket.onclose transitions to 'disconnected'
-        break;
-
+        break; // onclose transitions to 'disconnected'
 
     case 'failed':
-        if (oldstate === 'disconnected') {
-            error("Invalid transition from 'disconnected' to 'failed'");
-        }
-        if (oldstate === 'normal') {
-            error("Error while connected.");
-        }
-        if (oldstate === 'init') {
-            error("Error while initializing.");
-        }
-
         // Make sure we transition to disconnected
         setTimeout(function() { updateState('disconnected'); }, 50);
-
         break;
-
-
-    default:
-        // No state change action to take
-
     }
 
     if ((oldstate === 'failed') && (state === 'disconnected')) {
@@ -1138,17 +1092,10 @@ init_msg = function() {
 
 /* Normal RFB/VNC server message handler */
 normal_msg = function() {
-    var ret = true, msg_type,
-        c, length;
-
-    if (FBU.rects > 0) {
-        msg_type = 0;
-    } else {
-        msg_type = rQ[rQi++];
-    }
+    var msg_type = (FBU.rects === 0) ? rQ[rQi++] : 0;
     switch (msg_type) {
     case 0:  // FramebufferUpdate
-        ret = framebufferUpdate(); // false means need more data
+        return framebufferUpdate(); // false means need more data
         break;
     case 1:  // SetColourMapEntries
         updateState('failed', "Error: got SetColourMapEntries");
@@ -1157,32 +1104,23 @@ normal_msg = function() {
         warn("Bell (unsupported)");
         break;
     case 3:  // ServerCutText
-        debug("ServerCutText");
         if (rQwait("ServerCutText header", 7, 1)) { return false; }
         rQshiftBytes(3);  // Padding
-        length = rQshift32();
+        var length = rQshift32();
         if (rQwait("ServerCutText", length, 8)) { return false; }
-        rQshiftStr(length); // Ignore it
+        debug("ServerCutText: " + rQshiftStr(length));
         break;
     default:
-        updateState('failed',
-                "Disconnected: illegal server message type " + msg_type);
-        debug("rQ.slice(0,30):" + rQ.slice(0,30));
-        break;
+        updateState('failed', "Illegal message type: " + msg_type);
     }
-    return ret;
+    return true;
 };
 
 framebufferUpdate = function() {
-    var now, h, fbu_rt_diff;
-
     if (FBU.rects === 0) {
         if (rQwait("FBU header", 3)) {
-            if (rQi === 0) {
-                rQ.unshift(0);  // FBU msg_type
-            } else {
-                rQi -= 1;
-            }
+            if (rQi === 0) { rQ.unshift(0); } // FBU msg_type
+            else           { rQi -= 1; }
             return false;
         }
         rQi++;
@@ -1191,41 +1129,37 @@ framebufferUpdate = function() {
     }
 
     while (FBU.rects > 0) {
-        if (rfb_state !== "normal") {
-            return false;
-        }
+        if (rfb_state !== "normal") { return false; }
         if (rQwait("FBU")) { return false; }
         if (FBU.bytes === 0) {
-            if (rQwait("rect header", 12)) { return false; }
             /* New FramebufferUpdate */
+            if (rQwait("rect header", 12)) { return false; }
 
-            h = rQshiftBytes(12); // header
+            var h = rQshiftBytes(12); // header
             FBU.x      = (h[0]<<8)+h[1];
             FBU.y      = (h[2]<<8)+h[3];
             FBU.w      = (h[4]<<8)+h[5];
             FBU.h      = (h[6]<<8)+h[7];
-            FBU.encoding = (h[8]<<24)+(h[9]<<16)+(h[10]<<8)+h[11];
+            FBU.enc    = (h[8]<<24)+(h[9]<<16)+(h[10]<<8)+h[11];
 
-            if (FBU.encoding in encHandlers) {
+            if (FBU.enc in encHandlers) {
                 // Debug:
                 /*
                 var msg =  "FramebufferUpdate rects:" + FBU.rects;
                 msg += " x: " + FBU.x + " y: " + FBU.y;
                 msg += " width: " + FBU.w     + " height: " + FBU.h     ;
-                msg += " encoding:" + FBU.encoding;
-                msg += "(" + encNames[FBU.encoding.toString()] + ")";
+                msg += " encoding:" + FBU.enc;
+                msg += "(" + encNames[FBU.enc.toString()] + ")";
                 msg += ", rQlen(): " + rQlen();
                 debug(msg);
                 */
             } else {
-                updateState('failed',
-                        "Disconnected: unsupported encoding " +
-                        FBU.encoding);
+                updateState('failed', "Illegal encoding " + FBU.enc);
                 return false;
             }
         }
 
-        if (! encHandlers[FBU.encoding]()) { return false; }
+        if (! encHandlers[FBU.enc]()) { return false; }
     }
     return true; // FBU finished
 };
@@ -1271,7 +1205,7 @@ encHandlers[1] = function display_copy_rect() {
 };
 
 encHandlers[5] = function display_hextile() {
-    var subencoding, subrects, tile, color, cur_tile,
+    var subenc, subrects, tile, color, cur_tile,
         tile_x, x, w, tile_y, y, h, xy, s, sx, sy, wh, sw, sh;
 
     if (FBU.tiles === 0) {
@@ -1285,10 +1219,9 @@ encHandlers[5] = function display_hextile() {
     while (FBU.tiles > 0) {
         FBU.bytes = 1;
         if (rQwait("HEXTILE subencoding")) { return false; }
-        subencoding = rQ[rQi];  // Peek
-        if (subencoding > 30) { // Raw
-            updateState('failed',
-                    "Disconnected: illegal hextile subencoding " + subencoding);
+        subenc= rQ[rQi];  // Peek
+        if (subenc> 30) { // Raw
+            updateState('failed', "Illegal hextile subencoding " + subenc);
             return false;
         }
         subrects = 0;
@@ -1301,20 +1234,20 @@ encHandlers[5] = function display_hextile() {
         h = Math.min(16, (FBU.y + FBU.h) - y);
 
         /* Figure out how much we are expecting */
-        if (subencoding & 0x01) { // Raw
+        if (subenc & 0x01) { // Raw
             FBU.bytes += w * h * fb_Bpp;
         } else {
-            if (subencoding & 0x02) { // Background
+            if (subenc & 0x02) { // Background
                 FBU.bytes += fb_Bpp;
             }
-            if (subencoding & 0x04) { // Foreground
+            if (subenc & 0x04) { // Foreground
                 FBU.bytes += fb_Bpp;
             }
-            if (subencoding & 0x08) { // AnySubrects
+            if (subenc & 0x08) { // AnySubrects
                 FBU.bytes++;   // Since we aren't shifting it off
                 if (rQwait("hextile subrects header")) { return false; }
                 subrects = rQ[rQi + FBU.bytes-1]; // Peek
-                if (subencoding & 0x10) { // SubrectsColoured
+                if (subenc & 0x10) { // SubrectsColoured
                     FBU.bytes += subrects * (fb_Bpp + 2);
                 } else {
                     FBU.bytes += subrects * 2;
@@ -1325,31 +1258,31 @@ encHandlers[5] = function display_hextile() {
         if (rQwait("hextile")) { return false; }
 
         /* We know the encoding and have a whole tile */
-        FBU.subencoding = rQ[rQi++];
-        if (FBU.subencoding === 0) {
-            if (FBU.lastsubencoding & 0x01) {
+        FBU.subenc = rQ[rQi++];
+        if (FBU.subenc === 0) {
+            if (FBU.lastsubenc & 0x01) {
                 debug("     Ignoring blank after RAW");
             } else {
                 canvas.fillRect(x, y, w, h, FBU.background);
             }
-        } else if (FBU.subencoding & 0x01) { // Raw
+        } else if (FBU.subenc & 0x01) { // Raw
             canvas.blitImage(x, y, w, h, rQ, rQi);
             rQi += FBU.bytes - 1;
         } else {
-            if (FBU.subencoding & 0x02) { // Background
+            if (FBU.subenc & 0x02) { // Background
                 FBU.background = rQ.slice(rQi, rQi + fb_Bpp);
                 rQi += fb_Bpp;
             }
-            if (FBU.subencoding & 0x04) { // Foreground
+            if (FBU.subenc & 0x04) { // Foreground
                 FBU.foreground = rQ.slice(rQi, rQi + fb_Bpp);
                 rQi += fb_Bpp;
             }
 
             tile = canvas.getTile(x, y, w, h, FBU.background);
-            if (FBU.subencoding & 0x08) { // AnySubrects
+            if (FBU.subenc & 0x08) { // AnySubrects
                 subrects = rQ[rQi++];
                 for (s = 0; s < subrects; s++) {
-                    if (FBU.subencoding & 0x10) { // SubrectsColoured
+                    if (FBU.subenc & 0x10) { // SubrectsColoured
                         color = rQ.slice(rQi, rQi + fb_Bpp);
                         rQi += fb_Bpp;
                     } else {
@@ -1363,7 +1296,7 @@ encHandlers[5] = function display_hextile() {
             }
             canvas.putTile(tile);
         }
-        FBU.lastsubencoding = FBU.subencoding;
+        FBU.lastsubenc = FBU.subenc;
         FBU.bytes = 0;
         FBU.tiles -= 1;
     }
