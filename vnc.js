@@ -49,7 +49,6 @@ var that           = {},         // Public API interface
     rfb_auth       = '',
     rfb_shared     = 1,
 
-
     // In preference order
     encList = [1, 5, 0, -223],
     encHandlers    = {},
@@ -696,9 +695,7 @@ pointerEvent = function(x, y) {
 
 // RFB/VNC initialisation message handler
 init_msg = function() {
-    var reason, length,
-        i, types, num_types, challenge, response, bpp, true_color,
-        depth, big_endian;
+    var reason, length, i, types, num_types, big_endian;
 
     switch (rfb_state) {
 
@@ -742,8 +739,7 @@ init_msg = function() {
             num_types = rQ[rQi++];
             if (rQwait("security type", num_types, 1)) { return false; }
             if (num_types === 0) {
-                length = rQshift32();
-                reason = rQshiftStr(length);
+                reason = rQshiftStr(rQshift32());
                 state('failed', "Security failure: " + reason);
                 return;
             }
@@ -770,12 +766,10 @@ init_msg = function() {
         break;
 
     case 'Authentication' :
-        //debug("Security auth scheme: " + rfb_auth);
         switch (rfb_auth) {
             case 0:  // connection failed
                 if (rQwait("auth reason", 4)) { return false; }
-                length = rQshift32();
-                reason = rQshiftStr(length);
+                reason = rQshiftStr(rQshift32());
                 state('failed', "Auth failure: " + reason);
                 return;
             case 1:  // no authentication
@@ -787,16 +781,8 @@ init_msg = function() {
                     return;
                 }
                 if (rQwait("auth challenge", 16)) { return false; }
-                challenge = rQshiftBytes(16);
-                //debug("Password: " + rfb_password);
-                //debug("Challenge: " + challenge +
-                //           " (" + challenge.length + ")");
-                response = genDES(rfb_password, challenge);
-                //debug("Response: " + response +
-                //           " (" + response.length + ")");
-                
                 //debug("Sending DES encrypted auth response");
-                send_array(response);
+                send_array(genDES(rfb_password, rQshiftBytes(16)));
                 state('SecurityResult');
                 break;
             default:
@@ -842,22 +828,15 @@ init_msg = function() {
         // Screen size
         fb_width  = rQshift16();
         fb_height = rQshift16();
+        debug("Screen: " + fb_width + "x" + fb_height);
 
         // PIXEL_FORMAT
-        bpp            = rQ[rQi++];
-        depth          = rQ[rQi++];
-        big_endian     = rQ[rQi++];
-        true_color     = rQ[rQi++];
-
-        debug("Screen: " + fb_width + "x" + fb_height + 
-                  ", bpp: " + bpp + ", depth: " + depth +
-                  ", big_endian: " + big_endian +
-                  ", true_color: " + true_color);
+        big_endian = rQ[rQi+3];
+        rQi += 4; // ignore server bpp, depth, true_color
 
         // Connection name/title
-        rQshiftStr(12);
-        length   = rQshift32();
-        fb_name = rQshiftStr(length);
+        rQshiftStr(12); // padding
+        fb_name = rQshiftStr(rQshift32());
 
         c_resize(fb_width, fb_height);
         c_modEvents(true);
@@ -1171,7 +1150,6 @@ that.testMode = function(override_send_array) {
             state('ProtocolVersion', "Starting VNC handshake");
         };
 };
-
 
 // Sanity checks and initialization
 try {
