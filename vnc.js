@@ -45,8 +45,8 @@ var that           = {},         // Public API interface
     rfb_password   = '',
 
     rfb_state      = 'disconnected',
-    rfb_version    = 0,
-    rfb_auth_scheme= '',
+    rfb_version    = "",
+    rfb_auth       = '',
     rfb_shared     = 1,
 
 
@@ -247,17 +247,8 @@ function c_modEvents(add) {
 
 function c_resize(width, height) {
     var c = conf.target;
-
-    c.width = width;
-    c.height = height;
-
-    c_width  = c.offsetWidth;
-    c_height = c.offsetHeight;
-}
-
-function c_clear() {
-    c_resize(640, 20);
-    c_ctx.clearRect(0, 0, c_width, c_height);
+    c.width = width; c.height = height;
+    c_width = c.offsetWidth; c_height = c.offsetHeight;
 }
 
 function c_fillRect(x, y, width, height, c) {
@@ -396,17 +387,17 @@ function rQwait(msg, num, goback) {
 //   password     - waiting for password, not part of RFB
 //   SecurityResult
 //   ServerInitialization
-function updateState(state, statusMsg) {
-    var func, cmsg, oldstate = rfb_state;
+function state(newS, statusMsg) {
+    var func, cmsg, oldS = rfb_state;
 
-    if (state === oldstate) {
-        debug("Already in state '" + state + "', ignoring.");
+    if (newS === oldS) {
+        debug("Already in state '" + newS + "', ignoring.");
         return;
     }
 
     // Disconnected states. A previous connect may asynchronously
     // cause a connection so make sure we are closed.
-    if (state in {'disconnected':1, 'loaded':1, 'connect':1,
+    if (newS in {'disconnected':1, 'loaded':1, 'connect':1,
                   'disconnect':1, 'failed':1, 'fatal':1}) {
         if (sendTimer) { sendTimer = clearInterval(sendTimer); }
         if (msgTimer)  { msgTimer  = clearInterval(msgTimer); }
@@ -414,7 +405,7 @@ function updateState(state, statusMsg) {
         if (c_ctx) {
             c_modEvents(false);
             if (log_level !== 'debug') {
-                c_clear();
+                c_resize(640, 20);
             }
         }
 
@@ -428,24 +419,24 @@ function updateState(state, statusMsg) {
         }
     }
 
-    if (oldstate === 'fatal') {
+    if (oldS === 'fatal') {
         error("Fatal error, cannot continue");
     }
 
-    if ((state === 'failed') || (state === 'fatal')) {
+    if ((newS === 'failed') || (newS === 'fatal')) {
         func = error;
     } else {
         func = warn;
     }
 
-    rfb_state = state;
-    if ((oldstate === 'failed') && (state === 'disconnected')) {
+    rfb_state = newS;
+    if ((oldS === 'failed') && (newS === 'disconnected')) {
         // Do disconnect action, but stay in failed state.
         rfb_state = 'failed';
     }
 
     cmsg = typeof(statusMsg) !== 'undefined' ? (" Msg: " + statusMsg) : "";
-    func("New state '" + rfb_state + "', was '" + oldstate + "'." + cmsg);
+    func("New state '" + rfb_state + "', was '" + oldS + "'." + cmsg);
 
     if (connTimer && (rfb_state !== 'connect')) {
         debug("Clearing connect timer");
@@ -457,10 +448,10 @@ function updateState(state, statusMsg) {
         disconnTimer = clearInterval(disconnTimer);
     }
 
-    switch (state) {
+    switch (newS) {
     case 'connect':
         connTimer = setTimeout(function () {
-                updateState('failed', "Connect timeout");
+                state('failed', "Connect timeout");
             }, conf.connectTimeout * 1000);
         init_vars();
         init_ws();
@@ -469,22 +460,22 @@ function updateState(state, statusMsg) {
     case 'disconnect':
         if (! test_mode) {
             disconnTimer = setTimeout(function () {
-                    updateState('failed', "Disconnect timeout");
+                    state('failed', "Disconnect timeout");
                 }, conf.disconnectTimeout * 1000);
         }
         break; // onclose transitions to 'disconnected'
 
     case 'failed':
         // Make sure we transition to disconnected
-        setTimeout(function() { updateState('disconnected'); }, 50);
+        setTimeout(function() { state('disconnected'); }, 50);
         break;
     }
 
-    if ((oldstate === 'failed') && (state === 'disconnected')) {
+    if ((oldS === 'failed') && (newS === 'disconnected')) {
         // Leave the failed message
-        conf.updateState(that, state, oldstate);
+        conf.updateState(that, newS, oldS);
     } else {
-        conf.updateState(that, state, oldstate, statusMsg);
+        conf.updateState(that, newS, oldS, statusMsg);
     }
 }
 
@@ -562,9 +553,9 @@ recv_message = function(e) {
             warn("recv_message, caught exception:" + exc);
         }
         if (typeof exc.name !== 'undefined') {
-            updateState('failed', exc.name + ": " + exc.message);
+            state('failed', exc.name + ": " + exc.message);
         } else {
-            updateState('failed', exc);
+            state('failed', exc);
         }
     }
 };
@@ -634,42 +625,37 @@ mouseMove = function(x, y) {
 // Setup routines
 
 init_ws = function() {
-    var uri = "";
-    if (conf.encrypt) {
-        uri = "wss://";
-    } else {
-        uri = "ws://";
-    }
+    var uri = conf.encrypt ? "wss://" : "ws://";
     uri += rfb_host + ":" + rfb_port + "/";
     debug("connecting to " + uri);
-    ws = new WebSocket(uri);
 
+    ws = new WebSocket(uri);
     ws.onmessage = recv_message;
     ws.onopen = function(e) {
         debug(">> WebSocket.onopen");
         if (rfb_state === "connect") {
-            updateState('ProtocolVersion', "Starting VNC handshake");
+            state('ProtocolVersion', "Starting VNC handshake");
         } else {
-            updateState('failed', "Got unexpected WebSockets connection");
+            state('failed', "Got unexpected WebSockets connection");
         }
         debug("<< WebSocket.onopen");
     };
     ws.onclose = function(e) {
         debug(">> WebSocket.onclose");
         if (rfb_state === 'disconnect') {
-            updateState('disconnected', 'VNC disconnected');
+            state('disconnected', 'VNC disconnected');
         } else if (rfb_state === 'ProtocolVersion') {
-            updateState('failed', 'Failed to connect to server');
+            state('failed', 'Failed to connect to server');
         } else if (rfb_state in {'failed':1, 'disconnected':1}) {
             error("Received onclose while disconnected");
         } else  {
-            updateState('failed', 'Server disconnected');
+            state('failed', 'Server disconnected');
         }
         debug("<< WebSocket.onclose");
     };
     ws.onerror = function(e) {
         debug(">> WebSocket.onerror");
-        updateState('failed', "WebSocket error");
+        state('failed', "WebSocket error");
         debug("<< WebSocket.onerror");
     };
 };
@@ -710,7 +696,7 @@ pointerEvent = function(x, y) {
 
 // RFB/VNC initialisation message handler
 init_msg = function() {
-    var strlen, reason, length, sversion,
+    var reason, length,
         i, types, num_types, challenge, response, bpp, true_color,
         depth, big_endian;
 
@@ -718,21 +704,16 @@ init_msg = function() {
 
     case 'ProtocolVersion' :
         if (rQlen() < 12) {
-            updateState('failed',
-                    "Disconnected: incomplete protocol version");
+            state('failed', "Incomplete protocol version");
             return;
         }
-        sversion = rQshiftStr(12).substr(4,7);
-        debug("Server ProtocolVersion: " + sversion);
-        switch (sversion) {
-            case "003.003": rfb_version = 3.3; break;
-            case "003.006": rfb_version = 3.3; break;  // UltraVNC
-            case "003.007": rfb_version = 3.7; break;
-            case "003.008": rfb_version = 3.8; break;
-            default:
-                updateState('failed',
-                        "Invalid server version " + sversion);
-                return;
+        rfb_version = rQshiftStr(12).substr(4,7);
+        if (rfb_version in {"003.003":1, "003.006":1,
+                            "003.007":1, "003.008":1}) {
+            debug("Server ProtocolVersion: " + rfb_version);
+        } else {
+            state('failed', "Invalid server version " + rfb_version);
+            return;
         }
 
         if (! test_mode) {
@@ -751,63 +732,58 @@ init_msg = function() {
                 }, 50);
         }
 
-        send_array(("RFB 00" + parseInt(rfb_version,10) + ".00" +
-                    ((rfb_version * 10) % 10) + "\n").split('').map(
+        send_array(("RFB " + rfb_version + "\n").split('').map(
             function (chr) { return chr.charCodeAt(0); } ) );
-        updateState('Security', "Sent ProtocolVersion: " + sversion);
+        state('Security', "Sent ProtocolVersion: " + rfb_version);
         break;
 
     case 'Security' :
-        if (rfb_version >= 3.7) {
+        if (rfb_version in {"003.007":1, "003.008":1}) {
             num_types = rQ[rQi++];
             if (rQwait("security type", num_types, 1)) { return false; }
             if (num_types === 0) {
-                strlen = rQshift32();
-                reason = rQshiftStr(strlen);
-                updateState('failed',
-                        "Disconnected: security failure: " + reason);
+                length = rQshift32();
+                reason = rQshiftStr(length);
+                state('failed', "Security failure: " + reason);
                 return;
             }
-            rfb_auth_scheme = 0;
+            rfb_auth = 0;
             types = rQshiftBytes(num_types);
             debug("Server security types: " + types);
             for (i=0; i < types.length; i+=1) {
-                if ((types[i] > rfb_auth_scheme) && (types[i] < 3)) {
-                    rfb_auth_scheme = types[i];
+                if ((types[i] > rfb_auth) && (types[i] < 3)) {
+                    rfb_auth = types[i];
                 }
             }
-            if (rfb_auth_scheme === 0) {
-                updateState('failed',
-                        "Disconnected: unsupported security types: " + types);
+            if (rfb_auth === 0) {
+                state('failed', "Unsupported security types: " + types);
                 return;
             }
             
-            send_array([rfb_auth_scheme]);
+            send_array([rfb_auth]);
         } else {
             if (rQwait("security scheme", 4)) { return false; }
-            rfb_auth_scheme = rQshift32();
+            rfb_auth = rQshift32();
         }
-        updateState('Authentication',
-                "Authenticating using scheme: " + rfb_auth_scheme);
+        state('Authentication', "Authenticating scheme: " + rfb_auth);
         init_msg();  // Recursive fallthrough (workaround JSLint complaint)
         break;
 
     case 'Authentication' :
-        //debug("Security auth scheme: " + rfb_auth_scheme);
-        switch (rfb_auth_scheme) {
+        //debug("Security auth scheme: " + rfb_auth);
+        switch (rfb_auth) {
             case 0:  // connection failed
                 if (rQwait("auth reason", 4)) { return false; }
-                strlen = rQshift32();
-                reason = rQshiftStr(strlen);
-                updateState('failed',
-                        "Disconnected: auth failure: " + reason);
+                length = rQshift32();
+                reason = rQshiftStr(length);
+                state('failed', "Auth failure: " + reason);
                 return;
             case 1:  // no authentication
-                updateState('SecurityResult');
+                state('SecurityResult');
                 break;
             case 2:  // VNC authentication
                 if (rfb_password.length === 0) {
-                    updateState('password', "Password Required");
+                    state('password', "Password Required");
                     return;
                 }
                 if (rQwait("auth challenge", 16)) { return false; }
@@ -821,40 +797,37 @@ init_msg = function() {
                 
                 //debug("Sending DES encrypted auth response");
                 send_array(response);
-                updateState('SecurityResult');
+                state('SecurityResult');
                 break;
             default:
-                updateState('failed',
-                        "Disconnected: unsupported auth scheme: " +
-                        rfb_auth_scheme);
+                state('failed', "Unsupported auth: " + rfb_auth);
                 return;
         }
         break;
 
     case 'SecurityResult' :
         if (rQlen() < 4) {
-            updateState('failed', "Invalid VNC auth response");
+            state('failed', "Invalid VNC auth response");
             return;
         }
         switch (rQshift32()) {
             case 0:  // OK
-                updateState('ServerInitialisation', "Authentication OK");
+                state('ServerInitialisation', "Authentication OK");
                 break;
             case 1:  // failed
-                if (rfb_version >= 3.8) {
+                if (rfb_version in {"003.008":1}) {
                     length = rQshift32();
                     if (rQwait("SecurityResult reason", length, 8)) {
                         return false;
                     }
                     reason = rQshiftStr(length);
-                    updateState('failed', reason);
+                    state('failed', reason);
                 } else {
-                    updateState('failed', "Authentication failed");
+                    state('failed', "Authentication failed");
                 }
                 return;
             case 2:  // too-many
-                updateState('failed',
-                        "Disconnected: too many auth attempts");
+                state('failed', "Too many auth attempts");
                 return;
         }
         send_array([rfb_shared]); // ClientInitialisation
@@ -862,7 +835,7 @@ init_msg = function() {
 
     case 'ServerInitialisation' :
         if (rQlen() < 24) {
-            updateState('failed', "Invalid server initialisation");
+            state('failed', "Invalid server initialisation");
             return;
         }
 
@@ -898,9 +871,9 @@ init_msg = function() {
         setTimeout(checkEvents, conf.check_rate);
 
         if (conf.encrypt) {
-            updateState('normal', "Connected (encrypted) to: " + fb_name);
+            state('normal', "Connected (encrypted) to: " + fb_name);
         } else {
-            updateState('normal', "Connected (unencrypted) to: " + fb_name);
+            state('normal', "Connected (unencrypted) to: " + fb_name);
         }
         break;
     }
@@ -914,7 +887,7 @@ normal_msg = function() {
     case 0:  // FramebufferUpdate
         return framebufferUpdate(); // false means need more data
     case 1:  // SetColourMapEntries
-        updateState('failed', "Error: got SetColourMapEntries");
+        state('failed', "Error: got SetColourMapEntries");
         break;
     case 2:  // Bell
         warn("Bell (unsupported)");
@@ -927,7 +900,7 @@ normal_msg = function() {
         debug("ServerCutText: " + rQshiftStr(length));
         break;
     default:
-        updateState('failed', "Illegal message type: " + msg_type);
+        state('failed', "Illegal message type: " + msg_type);
     }
     return true;
 };
@@ -970,7 +943,7 @@ framebufferUpdate = function() {
                 debug(msg);
                 */
             } else {
-                updateState('failed', "Illegal encoding " + FBU.enc);
+                state('failed', "Illegal encoding " + FBU.enc);
                 return false;
             }
         }
@@ -1032,7 +1005,7 @@ encHandlers[5] = function display_hextile() {
         if (rQwait("HEXTILE subencoding")) { return false; }
         subenc= rQ[rQi];  // Peek
         if (subenc> 30) { // Raw
-            updateState('failed', "Illegal hextile subencoding " + subenc);
+            state('failed', "Illegal hextile subencoding " + subenc);
             return false;
         }
         subrects = 0;
@@ -1117,7 +1090,6 @@ encHandlers[-223] = function set_desktopsize() {
     debug(">> set_desktopsize");
     fb_width = FBU.w;
     fb_height = FBU.h;
-    c_clear();
     c_resize(fb_width, fb_height);
     send_array(fbUpdateRequest(0)); // New non-incremental request
 
@@ -1138,14 +1110,14 @@ that.connect = function(host, port, password) {
     rfb_password   = (password !== undefined)   ? password : "";
 
     if ((!rfb_host) || (!rfb_port)) {
-        updateState('failed', "Must set host and port");
+        state('failed', "Must set host and port");
         return;
     }
-    updateState('connect');
+    state('connect');
 };
 
 that.disconnect = function() {
-    updateState('disconnect', 'Disconnecting');
+    state('disconnect', 'Disconnecting');
 };
 
 that.sendPassword = function(passwd) {
@@ -1196,7 +1168,7 @@ that.testMode = function(override_send_array) {
             rfb_host = host;
             rfb_port = port;
             rfb_password = password;
-            updateState('ProtocolVersion', "Starting VNC handshake");
+            state('ProtocolVersion', "Starting VNC handshake");
         };
 };
 
@@ -1209,17 +1181,17 @@ try {
     if (! c_ctx.createImageData) { throw("no createImageData method"); }
 } catch (exc) {
     error("Canvas exception: " + exc);
-    updateState('fatal', "No working Canvas");
+    state('fatal', "No working Canvas");
     return;
 }
 if (!window.WebSocket) {
-    updateState('fatal', "Native WebSockets support is required");
+    state('fatal', "Native WebSockets support is required");
     return;
 }
 
-c_clear();
+c_resize(640, 20);
 init_vars();
-updateState('loaded', 'noVNC ready: native WebSockets');
+state('loaded', 'noVNC ready: native WebSockets');
 return that;  // Return the public API interface
 
 }  // End of RFB()
