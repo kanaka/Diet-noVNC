@@ -6,10 +6,8 @@
 /*jslint browser: true, bitwise: false, white: false, plusplus: false */
 /*global window, console, document, WebSocket */
 
-var log_level = (document.location.href.match(
-                 /logging=([a-z]*)/) || ['', 'warn'])[1],
-    DES, stub = function(m) {}, 
-    debug = stub, warn = stub, error = stub;
+var log_level = (location.href.match(/logging=([a-z]*)/) || ['', 'warn'])[1],
+    DES, stub = function(m) {}, debug = stub, warn = stub, error = stub;
 
 // Logging/debug
 if (! window.console) {
@@ -37,50 +35,30 @@ var api = {}, // Public API interface
     c_ctx, c_width = 0, c_height = 0,
 
     // Detect gecko engine (code from mootools).
-    gecko = (function() { return (!document.getBoxObjectFor && window.mozInnerScreenX == null) ? false : ((document.getElementsByClassName) ? 19 : 18); }()),
+    gecko = (function() { return (!document.getBoxObjectFor && window.mozInnerScreenX == null) ? false : true; }()),
 
     // Private RFB namespace variables
-    rfb_host       = '',
-    rfb_port       = 5900,
-    rfb_password   = '',
-
-    rfb_state      = 'disconnected',
-    rfb_version    = "",
-    rfb_auth       = '',
-    rfb_shared     = 1,
+    rfb_host = '',  rfb_port = 5900,  rfb_password = '',
+    rfb_state = '', rfb_version = "", rfb_auth = '',
 
     // In preference order
-    encList = [1, 5, 0, -223],
-    encHandlers    = {},
-    encNames       = {
-        '1': 'COPYRECT',
-        '5': 'HEXTILE',
-        '0': 'RAW',
-        '-223': 'DesktopSize' },
+    encList = [1, 5, 0, -223], // COPYRECT, HEXTILE, RAW, DesktopSize
+    encFunc = {},
 
-    ws             = null,   // Web Socket object
-    sendTimer      = null,   // Send Queue check timer
-    connTimer      = null,   // connection timer
-    disconnTimer   = null,   // disconnection timer
-    msgTimer       = null,   // queued handle_message timer
+    ws             = null, // Web Socket object
+    sendTimer      = null, // Send Queue check timer
+    connTimer      = null, // connection timer
+    discTimer      = null, // disconnection timer
+    msgTimer       = null, // queued handle_message timer
 
-    // Receive and send queues
-    rQ             = [],     // Receive Queue
-    rQi            = 0,      // Receive Queue Index
-    rQmax          = 100000, // Max size before compacting
-    sQ             = "",     // Send Queue
+    rQ, rQi, rQmax = 100000, sQ, // Receive/send queue
 
     // Frame buffer update state
     FBU            = {
-        x : 0, y : 0,
-        w : 0, h : 0,
         rects  : 0,
         lines  : 0,  // RAW
         tiles  : 0,  // HEXTILE
         bytes  : 0,
-        enc    : 0,
-        subenc : -1,
-        bg     : null
     },
 
     fb_Bpp         = 4,
@@ -88,11 +66,8 @@ var api = {}, // Public API interface
     fb_width       = 0,
     fb_height      = 0,
     fb_name        = "",
-
     last_req_time  = 0,
-
     test_mode      = false,
-
     // Mouse state
     btnMask        = 0,
     mouse_arr      = [];
@@ -420,9 +395,9 @@ function state(newS, statusMsg) {
         connTimer = clearInterval(connTimer);
     }
 
-    if (disconnTimer && (rfb_state !== 'disconnect')) {
+    if (discTimer && (rfb_state !== 'disconnect')) {
         debug("Clearing disconnect timer");
-        disconnTimer = clearInterval(disconnTimer);
+        discTimer = clearInterval(discTimer);
     }
 
     switch (newS) {
@@ -436,7 +411,7 @@ function state(newS, statusMsg) {
 
     case 'disconnect':
         if (! test_mode) {
-            disconnTimer = setTimeout(function () {
+            discTimer = setTimeout(function () {
                     fail("Disconnect timeout");
                 }, conf.disconnectTimeout * 1000);
         }
@@ -663,7 +638,7 @@ pointerEvent = function(x, y) {
 
 // RFB/VNC initialisation message handler
 init_msg = function() {
-    var reason, length, i, types, num_types, big_endian;
+    var reason, length, i, types, num_types, big_endian, response;
 
     switch (rfb_state) {
 
@@ -776,7 +751,7 @@ init_msg = function() {
             case 2:  // too-many
                 return fail("Too many auth attempts");
         }
-        send_array([rfb_shared]); // ClientInitialisation
+        send_array([1]); // ClientInitialisation (shared)
         break;
 
     case 'ServerInitialisation' :
@@ -868,15 +843,13 @@ framebufferUpdate = function() {
             FBU.h   = (h[6]<<8)+h[7];
             FBU.enc = (h[8]<<24)+(h[9]<<16)+(h[10]<<8)+h[11];
 
-            if (FBU.enc in encHandlers) {
+            if (FBU.enc in encFunc) {
                 // Debug:
                 /*
                 var msg =  "FramebufferUpdate rects:" + FBU.rects;
                 msg += " x: " + FBU.x + " y: " + FBU.y;
-                msg += " width: " + FBU.w     + " height: " + FBU.h     ;
-                msg += " encoding:" + FBU.enc;
-                msg += "(" + encNames[FBU.enc.toString()] + ")";
-                msg += ", rQlen(): " + rQlen();
+                msg += " width: " + FBU.w     + " height: " + FBU.h;
+                msg += " encoding:" + FBU.enc + ", rQlen(): " + rQlen();
                 debug(msg);
                 */
             } else {
@@ -884,7 +857,7 @@ framebufferUpdate = function() {
             }
         }
 
-        if (! encHandlers[FBU.enc]()) { return false; }
+        if (! encFunc[FBU.enc]()) { return false; }
     }
     return true; // FBU finished
 };
@@ -892,7 +865,7 @@ framebufferUpdate = function() {
 
 // FramebufferUpdate encodings
 
-encHandlers[0] = function display_raw() {
+encFunc[0] = function display_raw() {
     if (FBU.lines === 0) {
         FBU.lines = FBU.h;
     }
@@ -914,7 +887,7 @@ encHandlers[0] = function display_raw() {
     return true;
 };
 
-encHandlers[1] = function display_copy_rect() {
+encFunc[1] = function display_copy_rect() {
     if (rQwait("COPYRECT", 4)) { return false; }
 
     var old_x = rQshift16(), old_y = rQshift16();
@@ -924,7 +897,7 @@ encHandlers[1] = function display_copy_rect() {
     return true;
 };
 
-encHandlers[5] = function display_hextile() {
+encFunc[5] = function display_hextile() {
     var subenc, subrects, tile, color, cur_tile,
         tile_x, x, w, tile_y, y, h, xy, s, sx, sy, wh, sw, sh;
 
@@ -939,8 +912,8 @@ encHandlers[5] = function display_hextile() {
     while (FBU.tiles > 0) {
         FBU.bytes = 1;
         if (rQwait("HEXTILE subencoding")) { return false; }
-        subenc= rQ[rQi];  // Peek
-        if (subenc> 30) { // Raw
+        subenc = rQ[rQi];  // Peek
+        if (subenc > 30) { // Raw
             return fail("Illegal hextile subencoding " + subenc);
         }
         subrects = 0;
@@ -1021,7 +994,7 @@ encHandlers[5] = function display_hextile() {
     return true;
 };
 
-encHandlers[-223] = function set_desktopsize() {
+encFunc[-223] = function set_desktopsize() {
     debug(">> set_desktopsize");
     fb_width = FBU.w;
     fb_height = FBU.h;
