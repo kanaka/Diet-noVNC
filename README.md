@@ -24,6 +24,7 @@ The following features of noVNC have been removed:
 * Local Cursor rendering
 * Clipboard support
 * 'info' logging level
+* sendKey API
 
 Other notes:
 

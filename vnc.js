@@ -26,9 +26,9 @@ switch (log_level) {
 // --- VNC/RFB core code ---------------------------------------------
 function RFB(conf) {
 
-var that           = {},         // Public API interface
+var api = {}, // Public API interface
 
-    // Pre-declare private functions used before definitions (jslint)
+    // Pre-declare (jslint)
     init_ws, init_msg, normal_msg, recv_message, framebufferUpdate,
     fbUpdateRequest, checkEvents, keyEvent, pointerEvent,
     keyPress, mouseButton, mouseMove,
@@ -99,7 +99,7 @@ var that           = {},         // Public API interface
 
 
 // Configuration settings
-that.conf = conf || {}; // Make it public
+api.conf = conf || {}; // Make it public
 function cdef(v, defval, desc) { 
     if (typeof conf[v] === 'undefined') { conf[v] = defval; } }
 
@@ -344,9 +344,7 @@ function rQshiftBytes(len) {
     return rQ.slice(rQi-len, rQi);
 }
 
-// Check to see if we must wait for 'num' bytes (default to FBU.bytes)
-// to be available in the receive queue. Return true if we need to
-// wait (and possibly print a debug message), otherwise false.
+// Do we need to wait for more data
 function rQwait(msg, num, goback) {
     if (typeof num !== 'number') { num = FBU.bytes; }
     var rQlen = rQ.length - rQi; // Skip rQlen() function call
@@ -364,34 +362,14 @@ function rQwait(msg, num, goback) {
     return false;
 }
 
-//
 // Utility routines
-//
 
-// Running states:
-//   disconnected - idle state
-//   normal       - connected
-//
-// Page states:
-//   loaded       - page load, equivalent to disconnected
-//   connect      - starting initialization
-//   disconnect   - starting disconnect
-//   failed       - abnormal transition to disconnected
-//   fatal        - failed to load page, or fatal error
-//
-// VNC initialization states:
-//   ProtocolVersion
-//   Security
-//   Authentication
-//   password     - waiting for password, not part of RFB
-//   SecurityResult
-//   ServerInitialization
 function state(newS, statusMsg) {
     var func, cmsg, oldS = rfb_state;
 
     if (newS === oldS) {
         debug("Already in state '" + newS + "', ignoring.");
-        return;
+        return false;
     }
 
     // Disconnected states. A previous connect may asynchronously
@@ -450,7 +428,7 @@ function state(newS, statusMsg) {
     switch (newS) {
     case 'connect':
         connTimer = setTimeout(function () {
-                state('failed', "Connect timeout");
+                fail("Connect timeout");
             }, conf.connectTimeout * 1000);
         init_vars();
         init_ws();
@@ -459,7 +437,7 @@ function state(newS, statusMsg) {
     case 'disconnect':
         if (! test_mode) {
             disconnTimer = setTimeout(function () {
-                    state('failed', "Disconnect timeout");
+                    fail("Disconnect timeout");
                 }, conf.disconnectTimeout * 1000);
         }
         break; // onclose transitions to 'disconnected'
@@ -472,31 +450,13 @@ function state(newS, statusMsg) {
 
     if ((oldS === 'failed') && (newS === 'disconnected')) {
         // Leave the failed message
-        conf.updateState(that, newS, oldS);
+        conf.updateState(api, newS, oldS);
     } else {
-        conf.updateState(that, newS, oldS, statusMsg);
+        conf.updateState(api, newS, oldS, statusMsg);
     }
+    return false;
 }
-
-// base64 encode
-function encode_message(arr) {
-    var i, encStr = "";
-    for (i=0; i < arr.length; i++) {
-        encStr += String.fromCharCode(arr[i]);
-    }
-    sQ += window.btoa(encStr);
-}
-
-// base64 decode
-function decode_message(data) {
-    var decStr, i, j;
-
-    decStr = window.atob(data);
-    i = rQ.length;
-    for (j=0; j < decStr.length; i++, j++) {
-        rQ[i] = decStr.charCodeAt(j);
-    }
-}
+function fail(msg) { return state('failed', msg); } 
 
 function handle_message() {
     if (rQlen() === 0) {
@@ -537,12 +497,16 @@ function handle_message() {
 
 recv_message = function(e) {
     try {
-        decode_message(e.data);
-        if (rQlen() > 0) {
-            handle_message();
-        } else {
+        var decStr, i = rQ.length, j;
+        decStr = window.atob(e.data); // base64 decode
+        if (!decStr) {
             debug("Ignoring empty message");
+            return;
         }
+        for (j=0; j < decStr.length; i++, j++) {
+            rQ[i] = decStr.charCodeAt(j);
+        }
+        handle_message();
     } catch (exc) {
         if (typeof exc.stack !== 'undefined') {
             warn("recv_message, caught exception: " + exc.stack);
@@ -552,16 +516,20 @@ recv_message = function(e) {
             warn("recv_message, caught exception:" + exc);
         }
         if (typeof exc.name !== 'undefined') {
-            state('failed', exc.name + ": " + exc.message);
+            fail(exc.name + ": " + exc.message);
         } else {
-            state('failed', exc);
+            fail(exc);
         }
     }
 };
 
 // overridable for testing
 function send_array(arr) {
-    encode_message(arr);
+    var i, encStr = "";
+    for (i=0; i < arr.length; i++) {
+        encStr += String.fromCharCode(arr[i]);
+    }
+    sQ += window.btoa(encStr); // base64 encode
     if (ws.bufferedAmount === 0) {
         ws.send(sQ);
         sQ = "";
@@ -635,7 +603,7 @@ init_ws = function() {
         if (rfb_state === "connect") {
             state('ProtocolVersion', "Starting VNC handshake");
         } else {
-            state('failed', "Got unexpected WebSockets connection");
+            fail("Got unexpected WebSockets connection");
         }
         debug("<< WebSocket.onopen");
     };
@@ -644,17 +612,17 @@ init_ws = function() {
         if (rfb_state === 'disconnect') {
             state('disconnected', 'VNC disconnected');
         } else if (rfb_state === 'ProtocolVersion') {
-            state('failed', 'Failed to connect to server');
+            fail('Failed to connect to server');
         } else if (rfb_state in {'failed':1, 'disconnected':1}) {
             error("Received onclose while disconnected");
         } else  {
-            state('failed', 'Server disconnected');
+            fail('Server disconnected');
         }
         debug("<< WebSocket.onclose");
     };
     ws.onerror = function(e) {
         debug(">> WebSocket.onerror");
-        state('failed', "WebSocket error");
+        fail("WebSocket error");
         debug("<< WebSocket.onerror");
     };
 };
@@ -701,16 +669,14 @@ init_msg = function() {
 
     case 'ProtocolVersion' :
         if (rQlen() < 12) {
-            state('failed', "Incomplete protocol version");
-            return;
+            return fail("Incomplete protocol version");
         }
         rfb_version = rQshiftStr(12).substr(4,7);
         if (rfb_version in {"003.003":1, "003.006":1,
                             "003.007":1, "003.008":1}) {
             debug("Server ProtocolVersion: " + rfb_version);
         } else {
-            state('failed', "Invalid server version " + rfb_version);
-            return;
+            return fail("Invalid server version " + rfb_version);
         }
 
         if (! test_mode) {
@@ -740,8 +706,7 @@ init_msg = function() {
             if (rQwait("security type", num_types, 1)) { return false; }
             if (num_types === 0) {
                 reason = rQshiftStr(rQshift32());
-                state('failed', "Security failure: " + reason);
-                return;
+                return fail("Security failure: " + reason);
             }
             rfb_auth = 0;
             types = rQshiftBytes(num_types);
@@ -752,8 +717,7 @@ init_msg = function() {
                 }
             }
             if (rfb_auth === 0) {
-                state('failed', "Unsupported security types: " + types);
-                return;
+                return fail("Unknown security types: " + types);
             }
             
             send_array([rfb_auth]);
@@ -762,7 +726,7 @@ init_msg = function() {
             rfb_auth = rQshift32();
         }
         state('Authentication', "Authenticating scheme: " + rfb_auth);
-        init_msg();  // Recursive fallthrough (workaround JSLint complaint)
+        init_msg();  // "fallthrough" (workaround JSLint)
         break;
 
     case 'Authentication' :
@@ -770,8 +734,7 @@ init_msg = function() {
             case 0:  // connection failed
                 if (rQwait("auth reason", 4)) { return false; }
                 reason = rQshiftStr(rQshift32());
-                state('failed', "Auth failure: " + reason);
-                return;
+                return fail("Auth failure: " + reason);
             case 1:  // no authentication
                 state('SecurityResult');
                 break;
@@ -786,15 +749,13 @@ init_msg = function() {
                 state('SecurityResult');
                 break;
             default:
-                state('failed', "Unsupported auth: " + rfb_auth);
-                return;
+                return fail("Unsupported auth: " + rfb_auth);
         }
         break;
 
     case 'SecurityResult' :
         if (rQlen() < 4) {
-            state('failed', "Invalid VNC auth response");
-            return;
+            return fail("Invalid VNC auth response");
         }
         switch (rQshift32()) {
             case 0:  // OK
@@ -807,22 +768,20 @@ init_msg = function() {
                         return false;
                     }
                     reason = rQshiftStr(length);
-                    state('failed', reason);
+                    fail(reason);
                 } else {
-                    state('failed', "Authentication failed");
+                    fail("Authentication failed");
                 }
                 return;
             case 2:  // too-many
-                state('failed', "Too many auth attempts");
-                return;
+                return fail("Too many auth attempts");
         }
         send_array([rfb_shared]); // ClientInitialisation
         break;
 
     case 'ServerInitialisation' :
         if (rQlen() < 24) {
-            state('failed', "Invalid server initialisation");
-            return;
+            return fail("Invalid server initialisation");
         }
 
         // Screen size
@@ -858,7 +817,6 @@ init_msg = function() {
     }
 };
 
-
 // Normal RFB/VNC server message handler
 normal_msg = function() {
     var length, msg_type = (FBU.rects === 0) ? rQ[rQi++] : 0;
@@ -866,7 +824,7 @@ normal_msg = function() {
     case 0:  // FramebufferUpdate
         return framebufferUpdate(); // false means need more data
     case 1:  // SetColourMapEntries
-        state('failed', "Error: got SetColourMapEntries");
+        fail("Error: got SetColourMapEntries");
         break;
     case 2:  // Bell
         warn("Bell (unsupported)");
@@ -879,7 +837,7 @@ normal_msg = function() {
         debug("ServerCutText: " + rQshiftStr(length));
         break;
     default:
-        state('failed', "Illegal message type: " + msg_type);
+        fail("Illegal message type: " + msg_type);
     }
     return true;
 };
@@ -904,11 +862,11 @@ framebufferUpdate = function() {
             if (rQwait("rect header", 12)) { return false; }
 
             var h = rQshiftBytes(12); // header
-            FBU.x      = (h[0]<<8)+h[1];
-            FBU.y      = (h[2]<<8)+h[3];
-            FBU.w      = (h[4]<<8)+h[5];
-            FBU.h      = (h[6]<<8)+h[7];
-            FBU.enc    = (h[8]<<24)+(h[9]<<16)+(h[10]<<8)+h[11];
+            FBU.x   = (h[0]<<8)+h[1];
+            FBU.y   = (h[2]<<8)+h[3];
+            FBU.w   = (h[4]<<8)+h[5];
+            FBU.h   = (h[6]<<8)+h[7];
+            FBU.enc = (h[8]<<24)+(h[9]<<16)+(h[10]<<8)+h[11];
 
             if (FBU.enc in encHandlers) {
                 // Debug:
@@ -922,8 +880,7 @@ framebufferUpdate = function() {
                 debug(msg);
                 */
             } else {
-                state('failed', "Illegal encoding " + FBU.enc);
-                return false;
+                return fail("Illegal encoding " + FBU.enc);
             }
         }
 
@@ -984,8 +941,7 @@ encHandlers[5] = function display_hextile() {
         if (rQwait("HEXTILE subencoding")) { return false; }
         subenc= rQ[rQi];  // Peek
         if (subenc> 30) { // Raw
-            state('failed', "Illegal hextile subencoding " + subenc);
-            return false;
+            return fail("Illegal hextile subencoding " + subenc);
         }
         subrects = 0;
         cur_tile = FBU.total_tiles - FBU.tiles;
@@ -1079,33 +1035,31 @@ encHandlers[-223] = function set_desktopsize() {
     return true;
 };
 
-//
-// Public API interface functions
-//
 
-that.connect = function(host, port, password) {
+// Public API interface functions
+
+api.connect = function(host, port, password) {
     rfb_host       = host;
     rfb_port       = port;
     rfb_password   = (password !== undefined)   ? password : "";
 
     if ((!rfb_host) || (!rfb_port)) {
-        state('failed', "Must set host and port");
-        return;
+        return fail("Must set host and port");
     }
     state('connect');
 };
 
-that.disconnect = function() {
+api.disconnect = function() {
     state('disconnect', 'Disconnecting');
 };
 
-that.sendPassword = function(passwd) {
+api.sendPassword = function(passwd) {
     rfb_password = passwd;
     rfb_state = "Authentication";
     setTimeout(init_msg, 1);
 };
 
-that.sendCtrlAltDel = function() {
+api.sendCtrlAltDel = function() {
     if (rfb_state !== "normal") { return false; }
     debug("Sending Ctrl-Alt-Del");
     var arr = [];
@@ -1119,31 +1073,14 @@ that.sendCtrlAltDel = function() {
     send_array(arr);
 };
 
-// Send a key press. If 'down' is not specified then send a down key
-// followed by an up key.
-that.sendKey = function(code, down) {
-    if (rfb_state !== "normal") { return false; }
-    var arr = [];
-    if (typeof down !== 'undefined') {
-        debug("Sending key code (" + (down ? "down" : "up") + "): " + code);
-        arr = arr.concat(keyEvent(code, down ? 1 : 0));
-    } else {
-        debug("Sending key code (down + up): " + code);
-        arr = arr.concat(keyEvent(code, 1));
-        arr = arr.concat(keyEvent(code, 0));
-    }
-    arr = arr.concat(fbUpdateRequest(1));
-    send_array(arr);
-};
-
-that.testMode = function(override_send_array) {
+api.testMode = function(override_send_array) {
     // Overridable internal functions for testing
     test_mode = true;
     send_array = override_send_array;
-    that.recv_message = recv_message;  // Expose it
+    api.recv_message = recv_message;  // Expose it
 
-    checkEvents = function () { /* Stub Out */ };
-    that.connect = function(host, port, password) {
+    checkEvents = stub;
+    api.connect = function(host, port, password) {
             rfb_host = host;
             rfb_port = port;
             rfb_password = password;
@@ -1159,18 +1096,16 @@ try {
     if (! c_ctx.createImageData) { throw("no createImageData method"); }
 } catch (exc) {
     error("Canvas exception: " + exc);
-    state('fatal', "No working Canvas");
-    return;
+    return state('fatal', "No working Canvas");
 }
 if (!window.WebSocket) {
-    state('fatal', "Native WebSockets support is required");
-    return;
+    return state('fatal', "Native WebSockets support is required");
 }
 
 c_resize(640, 20);
 init_vars();
 state('loaded', 'noVNC ready: native WebSockets');
-return that;  // Return the public API interface
+return api;  // Public API interface
 
 }  // End of RFB()
 
@@ -1273,21 +1208,16 @@ function enc8(text) {
     r = b[i++]<<24 | b[i++]<<16 | b[i++]<<8 | b[i++];
 
     x = ((l >>> 4) ^ r) & 0x0f0f0f0f;
-    r ^= x;
-    l ^= (x << 4);
+    r ^= x; l ^= (x << 4);
     x = ((l >>> 16) ^ r) & 0x0000ffff;
-    r ^= x;
-    l ^= (x << 16);
+    r ^= x; l ^= (x << 16);
     x = ((r >>> 2) ^ l) & 0x33333333;
-    l ^= x;
-    r ^= (x << 2);
+    r ^= (x << 2); l ^= x;
     x = ((r >>> 8) ^ l) & 0x00ff00ff;
-    l ^= x;
-    r ^= (x << 8);
+    r ^= (x << 8); l ^= x;
     r = (r << 1) | ((r >>> 31) & 1);
     x = (l ^ r) & 0xaaaaaaaa;
-    l ^= x;
-    r ^= x;
+    r ^= x; l ^= x;
     l = (l << 1) | ((l >>> 31) & 1);
 
     for (i = 0; i < 8; ++i) {
@@ -1319,21 +1249,16 @@ function enc8(text) {
 
     r = (r << 31) | (r >>> 1);
     x = (l ^ r) & 0xaaaaaaaa;
-    l ^= x;
-    r ^= x;
+    l ^= x; r ^= x;
     l = (l << 31) | (l >>> 1);
     x = ((l >>> 8) ^ r) & 0x00ff00ff;
-    r ^= x;
-    l ^= (x << 8);
+    l ^= (x << 8); r ^= x; 
     x = ((l >>> 2) ^ r) & 0x33333333;
-    r ^= x;
-    l ^= (x << 2);
+    l ^= (x << 2); r ^= x;
     x = ((r >>> 16) ^ l) & 0x0000ffff;
-    l ^= x;
-    r ^= (x << 16);
+    l ^= x; r ^= (x << 16);
     x = ((r >>> 4) ^ l) & 0x0f0f0f0f;
-    l ^= x;
-    r ^= (x << 4);
+    l ^= x; r ^= (x << 4);
 
     // Spread ints to bytes
     x = [r, l];
