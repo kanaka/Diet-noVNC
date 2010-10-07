@@ -1386,9 +1386,11 @@ try {
 } catch (exc) {
     error("Canvas exception: " + exc);
     updateState('fatal', "No working Canvas");
+    return;
 }
 if (!window.WebSocket) {
     updateState('fatal', "Native WebSockets support is required");
+    return;
 }
 
 init_vars();
