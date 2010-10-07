@@ -15,17 +15,6 @@ var log_level =  (document.location.href.match(
 
 // --- Utilities -----------------------------------------------------
 
-// Make arrays quack
-Array.prototype.push8 = function (n) {
-    this.push(n&0xFF);
-};
-Array.prototype.push16 = function (n) {
-    this.push((n>>8)&0xFF, (n)&0xFF);
-};
-Array.prototype.push32 = function (n) {
-    this.push((n>>24)&0xFF, (n>>16)&0xFF, (n>>8)&0xFF, (n)&0xFF);
-};
-
 // Logging/debug routines
 if (typeof window.console === "undefined") {
     window.console = {'log': stub, 'warn': stub, 'error': stub};
@@ -67,7 +56,7 @@ cdef('render_mode',    '',       'Canvas rendering mode (read-only)');
 
 // Translate DOM key event to keysym value
 function getKeysym(e) {
-    var evt = (e ? e : window.event), keysym, map1, map2, map3;
+    var keysym, map1, map2, map3;
 
     map1 = {
         8  : 0x08, 9  : 0x09, 13 : 0x0D, 27 : 0x1B, 45 : 0x63, 46 : 0xFF,
@@ -86,7 +75,7 @@ function getKeysym(e) {
         55: 38, 56: 42, 57: 40, 59: 58, 61: 43, 44: 60, 45: 95,
         46: 62, 47: 63, 96: 126, 91: 123, 92: 124, 93: 125, 39: 34 };
 
-    keysym = evt.keyCode;
+    keysym = e.keyCode;
 
     // Remap modifier and special keys
     if (keysym in map1) { keysym = 0xFF00 + map1[keysym]; }
@@ -95,7 +84,7 @@ function getKeysym(e) {
     if (keysym in map2) { keysym = map2[keysym]; }
     
     // Remap shifted and unshifted keys
-    if (!!evt.shiftKey) {
+    if (!!e.shiftKey) {
         if (keysym in map3) { keysym = map3[keysym]; }
     } else if ((keysym >= 65) && (keysym <=90)) {
         // Remap unshifted A-Z
@@ -105,125 +94,80 @@ function getKeysym(e) {
     return keysym;
 }
 
-// Cross-browser mouse event position within DOM element
-function getEventPosition(e, obj) {
-    var evt = (e ? e : window.event), docX, docY, x = 0, y = 0;
-    if (evt.pageX || evt.pageY) {
-        docX = evt.pageX;
-        docY = evt.pageY;
-    } else if (evt.clientX || evt.clientY) {
-        docX = evt.clientX + document.body.scrollLeft +
-            document.documentElement.scrollLeft;
-        docY = evt.clientY + document.body.scrollTop +
-            document.documentElement.scrollTop;
-    }
+// Mouse event position within DOM element
+function eventPos(e, obj) {
+    var x = 0, y = 0;
     if (obj.offsetParent) {
-        do {
+        while (obj) {
             x += obj.offsetLeft;
             y += obj.offsetTop;
             obj = obj.offsetParent;
-        } while (obj);
+        }
     }
-    return {'x': (docX - x), 'y': (docY - y)};
+    return {'x': e.pageX - x, 'y': e.pageY - y};
 }
-
 
 // Event registration. Based on: http://www.scottandrew.com/weblog/articles/cbs-events
 function addEvent(o, e, fn){
-    var r = true;
-    if      (o.attachEvent)     { r = o.attachEvent("on"+e, fn);     }
-    else if (o.addEventListener){ o.addEventListener(e, fn, false);  }
-    else                        { throw("Handler could not be attached"); }
-    return r;
+    if (o.attachEvent) { return o.attachEvent("on"+e, fn); }
+    o.addEventListener(e, fn, false);
+    return true;
 }
 
 function removeEvent(o, e, fn){
-    var r = true;
-    if (o.detachEvent)              { r = o.detachEvent("on"+e, fn); }
-    else if (o.removeEventListener) { o.removeEventListener(e, fn, false); }
-    else                            { throw("Handler could not be removed"); }
-    return r;
+    if (o.detachEvent) { return o.detachEvent("on"+e, fn); }
+    o.removeEventListener(e, fn, false);
+    return true;
 }
 
 function stopEvent(e) {
-    if (e.stopPropagation) { e.stopPropagation(); }
-    else                   { e.cancelBubble = true; }
-
-    if (e.preventDefault)  { e.preventDefault(); }
-    else                   { e.returnValue = false; }
+    e.stopPropagation();
+    e.preventDefault();
+    return false;
 }
-
 
 function onMouseButton(e, down) {
-    var evt = (e ? e : window.event), pos, bmask;
-    if (! conf.focused) {
-        return true;
-    }
-    pos = getEventPosition(e, conf.target);
-    bmask = 1 << evt.button;
-    if (c_mouseButton) {
-        c_mouseButton(pos.x, pos.y, down, bmask);
-    }
-    stopEvent(e);
-    return false;
+    if (! conf.focused) { return true; }
+    var p = eventPos(e, conf.target);
+    if (c_mouseButton) { c_mouseButton(p.x, p.y, down, 1<<e.button); }
+    return stopEvent(e);
 }
-
-function onMouseDown(e) {
-    onMouseButton(e, 1);
-}
-
-function onMouseUp(e) {
-    onMouseButton(e, 0);
-}
+function onMouseDown(e) { onMouseButton(e, 1); }
+function onMouseUp(e)   { onMouseButton(e, 0); }
 
 function onMouseWheel(e) {
-    var evt = (e ? e : window.event), pos, bmask, wheelData;
-    pos = getEventPosition(e, conf.target);
-    wheelData = evt.detail ? evt.detail * -1 : evt.wheelDelta / 40;
-    if (wheelData > 0) {
-        bmask = 1 << 3;
-    } else {
-        bmask = 1 << 4;
-    }
+    var p = eventPos(e, conf.target),
+        wData = e.detail ? e.detail * -1 : e.wheelDelta / 40;
     if (c_mouseButton) {
-        c_mouseButton(pos.x, pos.y, 1, bmask);
-        c_mouseButton(pos.x, pos.y, 0, bmask);
+        c_mouseButton(p.x, p.y, 1, 1 << (wData > 0 ? 3 : 4));
+        c_mouseButton(p.x, p.y, 0, 1 << (wData > 0 ? 3 : 4));
     }
-    stopEvent(e);
-    return false;
+    return stopEvent(e);
 }
 
 function onMouseMove(e) {
-    var evt = (e ? e : window.event), pos;
-    pos = getEventPosition(e, conf.target);
-    if (c_mouseMove) {
-        c_mouseMove(pos.x, pos.y);
-    }
+    var p = eventPos(e, conf.target);
+    if (c_mouseMove) { c_mouseMove(p.x, p.y); }
 }
 
 function onKeyDown(e) {
     if (! conf.focused) { return true; }
     if (c_keyPress)     { c_keyPress(getKeysym(e), 1); }
-    stopEvent(e);
-    return false;
+    return stopEvent(e);
 }
 
 function onKeyUp(e) {
     if (! conf.focused) { return true; }
     if (c_keyPress)     { c_keyPress(getKeysym(e), 0); }
-    stopEvent(e);
-    return false;
+    return stopEvent(e);
 }
 
 function onMouseDisable(e) {
-    var evt = (e ? e : window.event), pos;
     if (! conf.focused) { return true; }
-    pos = getEventPosition(e, conf.target);
+    var p = eventPos(e, conf.target);
     // Stop propagation if inside canvas area
-    if ((pos.x >= 0) && (pos.y >= 0) &&
-        (pos.x < c_width) && (pos.y < c_height)) {
-        stopEvent(e);
-        return false;
+    if (p.x >= 0 && p.y >= 0 && p.x < c_width && p.y < c_height) {
+        return stopEvent(e);
     }
     return true;
 }
@@ -231,10 +175,6 @@ function onMouseDisable(e) {
 //
 // Public API interface functions
 //
-
-that.getContext = function () {
-    return conf.ctx;
-};
 
 that.start = function(keyPressFunc, mouseButtonFunc, mouseMoveFunc) {
     var c;
@@ -422,7 +362,7 @@ var that           = {},         // Public API interface
     test_mode        = false,
 
     /* Mouse state */
-    mouse_buttonMask = 0,
+    btnMask          = 0,
     mouse_arr        = [];
 
 
@@ -452,7 +392,7 @@ function init_vars() {
     FBU.rects        = 0;
     FBU.lines        = 0;  // RAW
     FBU.tiles        = 0;  // HEXTILE
-    mouse_buttonMask = 0;
+    btnMask          = 0;
     mouse_arr        = [];
 }
 
@@ -546,7 +486,7 @@ function updateState(state, statusMsg) {
         if (sendTimer) { sendTimer = clearInterval(sendTimer); }
         if (msgTimer)  { msgTimer  = clearInterval(msgTimer); }
 
-        if (canvas && canvas.getContext()) {
+        if (canvas && canvas.conf.ctx) {
             canvas.stop();
             if (log_level !== 'debug') {
                 canvas.clear();
@@ -715,11 +655,6 @@ function send_array(arr) {
     }
 }
 
-function send_string(str) {
-    send_array(str.split('').map(
-        function (chr) { return chr.charCodeAt(0); } ) );
-}
-
 function genDES(password, challenge) {
     var i, passwd = [], des;
     for (i=0; i < password.length; i++) {
@@ -730,7 +665,6 @@ function genDES(password, challenge) {
 
 function flushClient() {
     if (mouse_arr.length > 0) {
-        //send_array(mouse_arr.concat(fbUpdateRequest(1)));
         send_array(mouse_arr);
         setTimeout(function() {
                 send_array(fbUpdateRequest(1));
@@ -759,18 +693,13 @@ checkEvents = function() {
 };
 
 function keyPress(keysym, down) {
-    var arr;
-    arr = keyEvent(keysym, down);
+    var arr = keyEvent(keysym, down);
     arr = arr.concat(fbUpdateRequest(1));
     send_array(arr);
 }
 
 function mouseButton(x, y, down, bmask) {
-    if (down) {
-        mouse_buttonMask |= bmask;
-    } else {
-        mouse_buttonMask ^= bmask;
-    }
+    btnMask = down ? btnMask |= bmask : btnMask ^= bmask;
     mouse_arr = mouse_arr.concat( pointerEvent(x, y) );
     flushClient();
 }
@@ -825,52 +754,32 @@ init_ws = function() {
 // Client message routines
 
 function pixelFormat() {
-    var arr = [0, 0, 0, 0]; // msg-type, padding
-
-    arr = arr.concat(fb_Bpp*8, fb_depth*8); // bpp, depth
-    arr = arr.concat(0, 1); // little-endian, true-color
-
-    arr.push16(255);  // red-max
-    arr.push16(255);  // green-max
-    arr.push16(255);  // blue-max
-    arr = arr.concat(0, 8, 16); // red-shift, green-shift, blue-shift
-
-    arr = arr.concat(0, 0, 0);     // padding
-    return arr;
+    return [0, 0,0,0, fb_Bpp*8, fb_depth*8, // msg, pad, bpp, depth
+        0,1,0,255,0,255,0,255, // little-endian, truecolor, R,G,B max
+        0,8,16,0,0,0];         // R,G,B shift, padding
 }
 
 function clientEncodings() {
-    var i, arr = [2, 0], e;
-
-    arr.push16(encList.length); // encoding count
-    for (i=0; i<encList.length; i++) { arr.push32(encList[i]); }
+    var i, n, arr = [2, 0,0, encList.length]; // msg, pad, cnt
+    for (i=0; i<encList.length; i++) {
+        n = encList[i];
+        arr.push((n>>24)&0xff, (n>>16)&0xff, (n>>8)&0xff, (n)&0xff);
+    }
     return arr;
 }
 
-fbUpdateRequest = function(incremental, x, y, xw, yw) {
-    var arr = [3, incremental];
-    if (!x) { x = 0; }
-    if (!y) { y = 0; }
-    if (!xw) { xw = fb_width; }
-    if (!yw) { yw = fb_height; }
-    arr.push16(x);
-    arr.push16(y);
-    arr.push16(xw);
-    arr.push16(yw);
-    return arr;
+fbUpdateRequest = function(incremental) {
+    return [3, incremental, 0,0, 0,0,  // msg, incremental, x, y
+        fb_width>>8,fb_width&0xff,     // width
+        fb_height>>8,fb_height&0xff];  // height
 };
 
-keyEvent = function(keysym, down) {
-    var arr = [4, down, 0, 0];
-    arr.push32(keysym);
-    return arr;
+keyEvent = function(k, down) {
+    return [4, down, 0,0, 0,0,k>>8,k&0xff]; // msg, down, pad, keysym
 };
 
 pointerEvent = function(x, y) {
-    var arr = [5, mouse_buttonMask];
-    arr.push16(x);
-    arr.push16(y);
-    return arr;
+    return [5, btnMask, x>>8,x&0xff, y>>8,y&0xff]; // msg, mask, x, y
 };
 
 
@@ -878,7 +787,7 @@ pointerEvent = function(x, y) {
 
 // RFB/VNC initialisation message handler
 init_msg = function() {
-    var strlen, reason, length, sversion, cversion,
+    var strlen, reason, length, sversion,
         i, types, num_types, challenge, response, bpp, true_color,
         depth, big_endian;
 
@@ -919,9 +828,9 @@ init_msg = function() {
                 }, 50);
         }
 
-        cversion = "00" + parseInt(rfb_version,10) +
-                   ".00" + ((rfb_version * 10) % 10);
-        send_string("RFB " + cversion + "\n");
+        send_array(("RFB 00" + parseInt(rfb_version,10) + ".00" +
+                    ((rfb_version * 10) % 10) + "\n").split('').map(
+            function (chr) { return chr.charCodeAt(0); } ) );
         updateState('Security', "Sent ProtocolVersion: " + sversion);
         break;
 
@@ -1153,19 +1062,17 @@ framebufferUpdate = function() {
 //
 
 encHandlers[0] = function display_raw() {
-    var cur_y, cur_height; 
-
     if (FBU.lines === 0) {
         FBU.lines = FBU.h;
     }
-    FBU.bytes = FBU.w * fb_Bpp; // At least a line
+
+    var x = FBU.x, y = FBU.y + (FBU.h - FBU.lines), w = FBU.w,
+        h = Math.min(FBU.lines, Math.floor(rQlen()/(FBU.w * fb_Bpp)));
+    FBU.bytes = w * fb_Bpp; // At least a line
     if (rQwait("RAW")) { return false; }
-    cur_y = FBU.y + (FBU.h - FBU.lines);
-    cur_height = Math.min(FBU.lines,
-                          Math.floor(rQlen()/(FBU.w * fb_Bpp)));
-    canvas.blitImage(FBU.x, cur_y, FBU.w, cur_height, rQ, rQi);
-    rQshiftBytes(FBU.w * cur_height * fb_Bpp);
-    FBU.lines -= cur_height;
+    canvas.blitImage(x, y, w, h, rQ, rQi);
+    rQi += w * h * fb_Bpp;
+    FBU.lines -= h;
 
     if (FBU.lines > 0) {
         FBU.bytes = FBU.w * fb_Bpp; // At least another line
@@ -1177,11 +1084,9 @@ encHandlers[0] = function display_raw() {
 };
 
 encHandlers[1] = function display_copy_rect() {
-    var old_x, old_y;
-
     if (rQwait("COPYRECT", 4)) { return false; }
-    old_x = rQshift16();
-    old_y = rQshift16();
+
+    var old_x = rQshift16(), old_y = rQshift16();
     canvas.copyImage(old_x, old_y, FBU.x, FBU.y, FBU.w, FBU.h);
     FBU.rects -= 1;
     FBU.bytes = 0;
@@ -1244,11 +1149,7 @@ encHandlers[5] = function display_hextile() {
         /* We know the encoding and have a whole tile */
         FBU.subenc = rQ[rQi++];
         if (FBU.subenc === 0) {
-            if (FBU.lastsubenc & 0x01) {
-                debug("     Ignoring blank after RAW");
-            } else {
-                canvas.fillRect(x, y, w, h, FBU.background);
-            }
+            canvas.fillRect(x, y, w, h, FBU.background);
         } else if (FBU.subenc & 0x01) { // Raw
             canvas.blitImage(x, y, w, h, rQ, rQi);
             rQi += FBU.bytes - 1;
@@ -1280,7 +1181,6 @@ encHandlers[5] = function display_hextile() {
             }
             canvas.putTile(tile);
         }
-        FBU.lastsubenc = FBU.subenc;
         FBU.bytes = 0;
         FBU.tiles -= 1;
     }
