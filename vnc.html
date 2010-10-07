@@ -45,9 +45,7 @@ Connect parameters are provided in query string:
                 </td>
             </tr></table>
         </div>
-        <canvas id="vnc" width="640px" height="20px">
-            Canvas not supported.
-        </canvas>
+        <canvas id="vnc" width="640px" height="20px"></canvas>
     </div>
 
     <script>
@@ -55,57 +53,34 @@ Connect parameters are provided in query string:
     /*global window, RFB, */
     "use strict";
 
-    var rfb;
+    var $ = function (id) { return document.getElementById(id); };
 
-    // Read a query string variable
     function getVar(name) {
         var re = new RegExp('[?][^#]*' + name + '=([^&#]*)');
-        return (document.location.href.match(re) || ['', null])[1];
+        return (location.href.match(re) || ['', null])[1];
     }
 
-    // Simple DOM selector by ID
-    var $ = function (id) {
-        return document.getElementById ? document.getElementById(id) :
-               document.all ? document.all[id] :
-               document.layers ? document.layers[id] : undefined;
-    };
-
-    function connect() {
-        rfb.connect($('host').value, $('port').value, $('passwd').value);
-    }
-    function setPassword() {
-        rfb.sendPassword($('new_passwd').value);
-        return false;
-    }
-    function sendCtrlAltDel() {
-        rfb.sendCtrlAltDel();
-        return false;
-    }
-    function updateState(rfb, state, oldstate, msg) {
-        var s = $('status'), c = $('cBtn'), klass;
-        $('cadBtn').disabled = true;
+    function state(rfb, newS, oldS, msg) {
+        var s = $('status'), c = $('cBtn'), cad = $('cadBtn'), klass;
+        cad.disabled = true;
+        cad.onclick = rfb.sendCAD;
         c.disabled = false;
         c.value = "Connect";
-        c.onclick = connect;
-        if (state in {'normal':1, 'password':1}) {
+        c.onclick = function () { rfb.connect(
+            $('host').value, $('port').value, $('passwd').value); };
+        if (newS === 'normal') {
             c.value = "Disconnect";
             c.onclick = rfb.disconnect;
-        } else if (state in {'fatal':1, 'failed':1}) {
+            cad.disabled = false;
+        } else if (newS in {'fatal':1, 'failed':1}) {
             c.disabled = true;
         }
-        if (state === 'password') {
-            msg = '<form id="npwd" onsubmit="return setPassword();">';
-            msg += 'Password Required: ';
-            msg += '<input type=password size=10 id="new_passwd" class="status">';
-            msg += '<\/form>';
-        }
-        switch (state) {
-            case 'failed':       klass = "sError";  break;
+        switch (newS) {
+            case 'failed':
             case 'fatal':        klass = "sError";  break;
-            case 'normal':       $('cadBtn').disabled = false;
-                                 klass = "sNormal"; break;
+            case 'loaded':
+            case 'normal':
             case 'disconnected': klass = "sNormal"; break;
-            case 'loaded':       klass = "sNormal"; break;
             default:             klass = "sWarn";
         }
 
@@ -116,15 +91,10 @@ Connect parameters are provided in query string:
     }
 
     window.onload = function () {
-        $('cadBtn').onclick = sendCtrlAltDel;
-
         $('host').value = getVar('host');
         $('port').value = getVar('port');
         $('passwd').value = getVar('password');
-
-        rfb = new RFB({'target':      $('vnc'),
-                       'encrypt':     getVar('encrypt'),
-                       'updateState': updateState});
+        new RFB($('vnc'), document, state, getVar('encrypt'), true);
     };
     </script>
 </body>

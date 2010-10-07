@@ -22,7 +22,7 @@ switch (log_level) {
 }
 
 // --- VNC/RFB core code ---------------------------------------------
-function RFB(conf) {
+function RFB(target, focusContainer, stateCallback, encrypt, shared) {
 
 var api = {}, // Public API interface
 
@@ -40,16 +40,16 @@ var api = {}, // Public API interface
     // Private RFB namespace variables
     rfb_host = '',  rfb_port = 5900,  rfb_password = '',
     rfb_state = '', rfb_version = "", rfb_auth = '',
+    connTimeout = 2, discTimeout = 3,
+    check_rate = 217, fbu_req_rate = 1413,
+    offStates = {'disconnected':1, 'loaded':1, 'connect':1,
+                 'disconnect':1, 'failed':1, 'fatal':1},
 
     // In preference order
     encList = [1, 5, 0, -223], // COPYRECT, HEXTILE, RAW, DesktopSize
     encFunc = {},
 
-    ws             = null, // Web Socket object
-    sendTimer      = null, // Send Queue check timer
-    connTimer      = null, // connection timer
-    discTimer      = null, // disconnection timer
-    msgTimer       = null, // queued handle_message timer
+    ws, sendTimer, connTimer, discTimer, msgTimer,
 
     rQ, rQi, rQmax = 100000, sQ, // Receive/send queue
 
@@ -72,22 +72,6 @@ var api = {}, // Public API interface
     btnMask        = 0,
     mouse_arr      = [];
 
-
-// Configuration settings
-api.conf = conf || {}; // Make it public
-function cdef(v, defval, desc) { 
-    if (typeof conf[v] === 'undefined') { conf[v] = defval; } }
-
-// Configuration settings
-cdef('target',            null, 'VNC viewport rendering Canvas');
-cdef('focusContainer',    document, 'DOM element that traps keyboard input');
-cdef('encrypt',           false, 'Use TLS/SSL/wss encryption');
-cdef('connectTimeout',    2,    'Time (s) to wait for connection');
-cdef('disconnectTimeout', 3,    'Time (s) to wait for disconnection');
-cdef('check_rate',        217,  'Timing (ms) of send/receive check');
-cdef('fbu_req_rate',      1413, 'Timing (ms) of frameBufferUpdate requests');
-cdef('updateState',       function() {}, 'callback: state update');
-
 //
 // Private Canvas functions
 //
@@ -97,21 +81,20 @@ function getKeysym(e) {
     var keysym, map1, map2, map3;
 
     map1 = {
-        8  : 0x08, 9  : 0x09, 13 : 0x0D, 27 : 0x1B, 45 : 0x63, 46 : 0xFF,
-        36 : 0x50, 35 : 0x57, 33 : 0x55, 34 : 0x56, 37 : 0x51, 38 : 0x52,
-        39 : 0x53, 40 : 0x54, 112: 0xBE, 113: 0xBF, 114: 0xC0, 115: 0xC1,
-        116: 0xC2, 117: 0xC3, 118: 0xC4, 119: 0xC5, 120: 0xC6, 121: 0xC7,
-        122: 0xC8, 123: 0xC9, 16 : 0xE1, 17 : 0xE3, 18 : 0xE9 };
+        8  :0x08, 9  :0x09, 13 :0x0D, 27 :0x1B, 45 :0x63, 46 :0xFF,
+        36 :0x50, 35 :0x57, 33 :0x55, 34 :0x56, 37 :0x51, 38 :0x52,
+        39 :0x53, 40 :0x54, 112:0xBE, 113:0xBF, 114:0xC0, 115:0xC1,
+        116:0xC2, 117:0xC3, 118:0xC4, 119:0xC5, 120:0xC6, 121:0xC7,
+        122:0xC8, 123:0xC9, 16 :0xE1, 17 :0xE3, 18 :0xE9 };
 
-    map2 = {
-        186: 59, 187: 61, 188: 44, 189: 45, 190: 46, 191: 47,
-        192: 96, 219: 91, 220: 92, 221: 93, 222: 39 };
+    map2 = {186:59, 187:61, 188:44, 189:45, 190:46, 191:47, 192:96,
+            219:91, 220:92, 221:93, 222:39 };
     if (gecko) { map2[109] = 45; }
 
     map3 = {
-        48: 41, 49: 33, 50: 64, 51: 35, 52: 36, 53: 37, 54: 94,
-        55: 38, 56: 42, 57: 40, 59: 58, 61: 43, 44: 60, 45: 95,
-        46: 62, 47: 63, 96: 126, 91: 123, 92: 124, 93: 125, 39: 34 };
+        48:41, 49:33, 50:64, 51:35, 52:36, 53:37, 54:94, 55:38,
+        56:42, 57:40, 59:58, 61:43, 44:60, 45:95, 46:62, 47:63,
+        96:126, 91:123, 92:124, 93:125, 39:34 };
 
     keysym = e.keyCode;
 
@@ -165,7 +148,7 @@ function stopEvent(e) {
 }
 
 function onMouseButton(e, down) {
-    var p = eventPos(e, conf.target);
+    var p = eventPos(e, target);
     mouseButton(p.x, p.y, down, 1<<e.button);
     return stopEvent(e);
 }
@@ -173,7 +156,7 @@ function onMouseDown(e) { onMouseButton(e, 1); }
 function onMouseUp(e)   { onMouseButton(e, 0); }
 
 function onMouseWheel(e) {
-    var p = eventPos(e, conf.target),
+    var p = eventPos(e, target),
         wData = e.detail ? e.detail * -1 : e.wheelDelta / 40;
     mouseButton(p.x, p.y, 1, 1 << (wData > 0 ? 3 : 4));
     mouseButton(p.x, p.y, 0, 1 << (wData > 0 ? 3 : 4));
@@ -181,7 +164,7 @@ function onMouseWheel(e) {
 }
 
 function onMouseMove(e) {
-    var p = eventPos(e, conf.target);
+    var p = eventPos(e, target);
     mouseMove(p.x, p.y);
 }
 
@@ -196,7 +179,7 @@ function onKeyUp(e) {
 }
 
 function onMouseDisable(e) {
-    var p = eventPos(e, conf.target);
+    var p = eventPos(e, target);
     // Stop propagation if inside canvas area
     if (p.x >= 0 && p.y >= 0 && p.x < c_width && p.y < c_height) {
         return stopEvent(e);
@@ -205,22 +188,20 @@ function onMouseDisable(e) {
 }
 
 function c_modEvents(add) {
-    var c = conf.target, f = add ? addEvent : removeEvent;
-    f(conf.focusContainer, 'keydown', onKeyDown);
-    f(conf.focusContainer, 'keyup', onKeyUp);
+    var c = target, f = add ? addEvent : removeEvent;
+    f(focusContainer, 'keydown', onKeyDown);
+    f(focusContainer, 'keyup', onKeyUp);
     f(c, 'mousedown', onMouseDown);
     f(c, 'mouseup', onMouseUp);
     f(c, 'mousemove', onMouseMove);
     f(c, (gecko) ? 'DOMMouseScroll' : 'mousewheel', onMouseWheel);
-
     // Work around right and middle click browser behaviors
-    f(conf.focusContainer, 'click', onMouseDisable);
-    f(conf.focusContainer.body, 'contextmenu', onMouseDisable);
+    f(focusContainer, 'click', onMouseDisable);
+    f(focusContainer.body, 'contextmenu', onMouseDisable);
 }
 
-
 function c_resize(width, height) {
-    var c = conf.target;
+    var c = target;
     c.width = width; c.height = height;
     c_width = c.offsetWidth; c_height = c.offsetHeight;
 }
@@ -231,7 +212,7 @@ function c_fillRect(x, y, width, height, c) {
 }
 
 function c_copyImage(x1, y1, x2, y2, w, h) {
-    c_ctx.drawImage(conf.target, x1, y1, w, h, x2, y2, w, h);
+    c_ctx.drawImage(target, x1, y1, w, h, x2, y2, w, h);
 }
 
 function c_blitImage(x, y, width, height, arr, offset) {
@@ -282,14 +263,14 @@ function c_putTile(img) {
 //
 
 function init_vars() {
-    rQ               = [];
-    rQi              = 0;
-    sQ               = "";
-    FBU.rects        = 0;
-    FBU.lines        = 0;  // RAW
-    FBU.tiles        = 0;  // HEXTILE
-    btnMask          = 0;
-    mouse_arr        = [];
+    rQ        = [];
+    rQi       = 0;
+    sQ        = "";
+    FBU.rects = 0;
+    FBU.lines = 0;  // RAW
+    FBU.tiles = 0;  // HEXTILE
+    btnMask   = 0;
+    mouse_arr = [];
 }
 
 // Receive Queue functions
@@ -298,14 +279,11 @@ function rQlen() {
 }
 
 function rQshift16() {
-    return (rQ[rQi++] <<  8) +
-           (rQ[rQi++]      );
+    return (rQ[rQi++] << 8) + rQ[rQi++];
 }
 function rQshift32() {
-    return (rQ[rQi++] << 24) +
-           (rQ[rQi++] << 16) +
-           (rQ[rQi++] <<  8) +
-           (rQ[rQi++]      );
+    return (rQ[rQi++] << 24) + (rQ[rQi++] << 16) +
+           (rQ[rQi++] <<  8) +  rQ[rQi++];
 }
 function rQshiftStr(len) {
     var arr = rQ.slice(rQi, rQi + len);
@@ -349,8 +327,7 @@ function state(newS, statusMsg) {
 
     // Disconnected states. A previous connect may asynchronously
     // cause a connection so make sure we are closed.
-    if (newS in {'disconnected':1, 'loaded':1, 'connect':1,
-                  'disconnect':1, 'failed':1, 'fatal':1}) {
+    if (newS in offStates) {
         if (sendTimer) { sendTimer = clearInterval(sendTimer); }
         if (msgTimer)  { msgTimer  = clearInterval(msgTimer); }
 
@@ -404,7 +381,7 @@ function state(newS, statusMsg) {
     case 'connect':
         connTimer = setTimeout(function () {
                 fail("Connect timeout");
-            }, conf.connectTimeout * 1000);
+            }, connTimeout * 1000);
         init_vars();
         init_ws();
         break; // onopen transitions to 'ProtocolVersion'
@@ -413,7 +390,7 @@ function state(newS, statusMsg) {
         if (! test_mode) {
             discTimer = setTimeout(function () {
                     fail("Disconnect timeout");
-                }, conf.disconnectTimeout * 1000);
+                }, discTimeout * 1000);
         }
         break; // onclose transitions to 'disconnected'
 
@@ -425,9 +402,9 @@ function state(newS, statusMsg) {
 
     if ((oldS === 'failed') && (newS === 'disconnected')) {
         // Leave the failed message
-        conf.updateState(api, newS, oldS);
+        stateCallback(api, newS, oldS);
     } else {
-        conf.updateState(api, newS, oldS, statusMsg);
+        stateCallback(api, newS, oldS, statusMsg);
     }
     return false;
 }
@@ -436,25 +413,18 @@ function fail(msg) { return state('failed', msg); }
 function handle_message() {
     if (rQlen() === 0) {
         warn("handle_message called on empty receive queue");
-        return;
-    }
-    switch (rfb_state) {
-    case 'disconnected':
-    case 'failed':
+    } else if (rfb_state in offStates) {
         error("Got data while disconnected");
-        break;
-    case 'normal':
+    } else if (rfb_state === 'normal') {
         if (normal_msg() && rQlen() > 0) {
             // true means we can continue processing
             // Give other events a chance to run
-            if (msgTimer === null) {
+            if (msgTimer) {
+                debug("More data to process, existing timer");
+            } else {
                 debug("More data to process, creating timer");
                 msgTimer = setTimeout(function () {
-                            msgTimer = null;
-                            handle_message();
-                        }, 10);
-            } else {
-                debug("More data to process, existing timer");
+                            msgTimer = null; handle_message(); }, 10);
             }
         }
         // Compact the queue
@@ -463,10 +433,8 @@ function handle_message() {
             rQ = rQ.slice(rQi);
             rQi = 0;
         }
-        break;
-    default:
+    } else {
         init_msg();
-        break;
     }
 }
 
@@ -484,11 +452,7 @@ recv_message = function(e) {
         handle_message();
     } catch (exc) {
         if (typeof exc.stack !== 'undefined') {
-            warn("recv_message, caught exception: " + exc.stack);
-        } else if (typeof exc.description !== 'undefined') {
-            warn("recv_message, caught exception: " + exc.description);
-        } else {
-            warn("recv_message, caught exception:" + exc);
+            warn("recv_message exception: " + exc.stack);
         }
         if (typeof exc.name !== 'undefined') {
             fail(exc.name + ": " + exc.message);
@@ -541,13 +505,13 @@ checkEvents = function() {
     if (rfb_state === 'normal') {
         if (! flushClient()) {
             now = new Date().getTime();
-            if (now > last_req_time + conf.fbu_req_rate) {
+            if (now > last_req_time + fbu_req_rate) {
                 last_req_time = now;
                 send_array(fbUpdateRequest(1));
             }
         }
     }
-    setTimeout(checkEvents, conf.check_rate);
+    setTimeout(checkEvents, check_rate);
 };
 
 keyPress = function (keysym, down) {
@@ -567,7 +531,7 @@ mouseMove = function(x, y) {
 // Setup routines
 
 init_ws = function() {
-    var uri = conf.encrypt ? "wss://" : "ws://";
+    var uri = encrypt ? "wss://" : "ws://";
     uri += rfb_host + ":" + rfb_port + "/";
     debug("connecting to " + uri);
 
@@ -715,8 +679,7 @@ init_msg = function() {
                 break;
             case 2:  // VNC authentication
                 if (rfb_password.length === 0) {
-                    state('password', "Password Required");
-                    return;
+                    return fail("Password Required");
                 }
                 if (rQwait("auth challenge", 16)) { return false; }
                 //debug("Sending DES encrypted auth response");
@@ -751,7 +714,7 @@ init_msg = function() {
             case 2:  // too-many
                 return fail("Too many auth attempts");
         }
-        send_array([1]); // ClientInitialisation (shared)
+        send_array([shared ? 1 : 0]); // ClientInitialisation
         break;
 
     case 'ServerInitialisation' :
@@ -781,9 +744,9 @@ init_msg = function() {
         send_array(response);
         
         // Start pushing/polling
-        setTimeout(checkEvents, conf.check_rate);
+        setTimeout(checkEvents, check_rate);
 
-        if (conf.encrypt) {
+        if (encrypt) {
             state('normal', "Connected (encrypted) to: " + fb_name);
         } else {
             state('normal', "Connected (unencrypted) to: " + fb_name);
@@ -1032,7 +995,7 @@ api.sendPassword = function(passwd) {
     setTimeout(init_msg, 1);
 };
 
-api.sendCtrlAltDel = function() {
+api.sendCAD = function() {
     if (rfb_state !== "normal") { return false; }
     debug("Sending Ctrl-Alt-Del");
     var arr = [];
@@ -1044,6 +1007,7 @@ api.sendCtrlAltDel = function() {
     arr = arr.concat(keyEvent(0xFFE3, 0)); // Control
     arr = arr.concat(fbUpdateRequest(1));
     send_array(arr);
+    return false;
 };
 
 api.testMode = function(override_send_array) {
@@ -1063,9 +1027,9 @@ api.testMode = function(override_send_array) {
 
 // Sanity checks and initialization
 try {
-    if (! conf.target) { throw("target must be set"); }
-    if (! conf.target.getContext) { throw("no getContext method"); }
-    c_ctx = conf.target.getContext('2d');
+    if (! target) { throw("target must be set"); }
+    if (! target.getContext) { throw("no getContext method"); }
+    c_ctx = target.getContext('2d');
     if (! c_ctx.createImageData) { throw("no createImageData method"); }
 } catch (exc) {
     error("Canvas exception: " + exc);
@@ -1243,10 +1207,10 @@ function enc8(text) {
 }
 
 // Encrypt 16 bytes of text using passwd as key
-function encrypt(t) {
+function encrypt16(t) {
     return enc8(t.slice(0,8)).concat(enc8(t.slice(8,16)));
 }
 
-return {'encrypt': encrypt}; // Public interface
+return {'encrypt': encrypt16}; // Public interface
 
 }; // End of DES()
