@@ -1,57 +1,121 @@
-/*
- * Diet noVNC: noVNC (HTML5 VNC client) but without the sugar.
- * Copyright (C) 2010 Joel Martin
- * Licensed under LGPL-3 (see LICENSE.txt)
- */
+// Diet noVNC: noVNC (HTML5 VNC client) but without the sugar.
+// Copyright (C) 2010 Joel Martin
+// Licensed under LGPL-3 (see LICENSE.txt)
 
 "use strict";
 /*jslint browser: true, bitwise: false, white: false, plusplus: false */
 /*global window, console, document, WebSocket */
 
-var log_level =  (document.location.href.match(
-                  /logging=([a-z]*)/) || ['', 'warn'])[1],
-    DES, gecko, stub = function(m) {}, 
-   debug = stub, info = stub, warn = stub, error = stub;
+var log_level = (document.location.href.match(
+                 /logging=([a-z]*)/) || ['', 'warn'])[1],
+    DES, stub = function(m) {}, 
+    debug = stub, warn = stub, error = stub;
 
-// --- Utilities -----------------------------------------------------
-
-// Logging/debug routines
-if (typeof window.console === "undefined") {
+// Logging/debug
+if (! window.console) {
     window.console = {'log': stub, 'warn': stub, 'error': stub};
 }
 switch (log_level) {
     case 'debug': debug = function (msg) { console.log(msg); };
-    case 'info':  info  = function (msg) { console.log(msg); };
     case 'warn':  warn  = function (msg) { console.warn(msg); };
     case 'error': error = function (msg) { console.error(msg); };
     case 'none':  break;
     default:      throw("invalid logging type '" + log_level + "'");
 }
 
-// Detect gecko engine (code from mootools).
-gecko = (function() { return (!document.getBoxObjectFor && window.mozInnerScreenX == null) ? false : ((document.getElementsByClassName) ? 19 : 18); }());
-
-
-// VNC Canvas drawing area
-function Canvas(conf) {
+// --- VNC/RFB core code ---------------------------------------------
+function RFB(conf) {
 
 var that           = {},         // Public API interface
 
+    // Pre-declare private functions used before definitions (jslint)
+    init_ws, init_msg, normal_msg, recv_message, framebufferUpdate,
+    fbUpdateRequest, checkEvents, keyEvent, pointerEvent,
+    keyPress, mouseButton, mouseMove,
+
     // Private Canvas namespace variables
-    c_width        = 0, c_height       = 0,
-    c_keyPress = null, c_mouseButton = null, c_mouseMove = null;
+    c_ctx, c_width = 0, c_height = 0,
+
+    // Detect gecko engine (code from mootools).
+    gecko = (function() { return (!document.getBoxObjectFor && window.mozInnerScreenX == null) ? false : ((document.getElementsByClassName) ? 19 : 18); }()),
+
+    // Private RFB namespace variables
+    rfb_host       = '',
+    rfb_port       = 5900,
+    rfb_password   = '',
+
+    rfb_state      = 'disconnected',
+    rfb_version    = 0,
+    rfb_auth_scheme= '',
+    rfb_shared     = 1,
+
+
+    // In preference order
+    encList = [1, 5, 0, -223],
+    encHandlers    = {},
+    encNames       = {
+        '1': 'COPYRECT',
+        '5': 'HEXTILE',
+        '0': 'RAW',
+        '-223': 'DesktopSize' },
+
+    ws             = null,   // Web Socket object
+    sendTimer      = null,   // Send Queue check timer
+    connTimer      = null,   // connection timer
+    disconnTimer   = null,   // disconnection timer
+    msgTimer       = null,   // queued handle_message timer
+
+    // Receive and send queues
+    rQ             = [],     // Receive Queue
+    rQi            = 0,      // Receive Queue Index
+    rQmax          = 100000, // Max size before compacting
+    sQ             = "",     // Send Queue
+
+    // Frame buffer update state
+    FBU            = {
+        x : 0, y : 0,
+        w : 0, h : 0,
+        rects  : 0,
+        lines  : 0,  // RAW
+        tiles  : 0,  // HEXTILE
+        bytes  : 0,
+        enc    : 0,
+        subenc : -1,
+        bg     : null
+    },
+
+    fb_Bpp         = 4,
+    fb_depth       = 3,
+    fb_width       = 0,
+    fb_height      = 0,
+    fb_name        = "",
+
+    last_req_time  = 0,
+
+    test_mode      = false,
+
+    // Mouse state
+    btnMask        = 0,
+    mouse_arr      = [];
+
 
 // Configuration settings
 that.conf = conf || {}; // Make it public
-function cdef(v, defval, desc) {
+function cdef(v, defval, desc) { 
     if (typeof conf[v] === 'undefined') { conf[v] = defval; } }
-cdef('target',         null,     'Canvas element for VNC viewport');
-cdef('focusContainer', document, 'DOM element that traps keyboard input');
-cdef('focused',        true,     'Capture and send key strokes');
-cdef('render_mode',    '',       'Canvas rendering mode (read-only)');
+
+// Configuration settings
+cdef('target',            null, 'VNC viewport rendering Canvas');
+cdef('focusContainer',    document, 'DOM element that traps keyboard input');
+cdef('encrypt',           false, 'Use TLS/SSL/wss encryption');
+cdef('connectTimeout',    2,    'Time (s) to wait for connection');
+cdef('disconnectTimeout', 3,    'Time (s) to wait for disconnection');
+cdef('check_rate',        217,  'Timing (ms) of send/receive check');
+cdef('fbu_req_rate',      1413, 'Timing (ms) of frameBufferUpdate requests');
+cdef('updateState',       function() {}, 'callback: state update');
 
 //
-// Private functions
+// Private Canvas functions
 //
 
 // Translate DOM key event to keysym value
@@ -127,9 +191,8 @@ function stopEvent(e) {
 }
 
 function onMouseButton(e, down) {
-    if (! conf.focused) { return true; }
     var p = eventPos(e, conf.target);
-    if (c_mouseButton) { c_mouseButton(p.x, p.y, down, 1<<e.button); }
+    mouseButton(p.x, p.y, down, 1<<e.button);
     return stopEvent(e);
 }
 function onMouseDown(e) { onMouseButton(e, 1); }
@@ -138,32 +201,27 @@ function onMouseUp(e)   { onMouseButton(e, 0); }
 function onMouseWheel(e) {
     var p = eventPos(e, conf.target),
         wData = e.detail ? e.detail * -1 : e.wheelDelta / 40;
-    if (c_mouseButton) {
-        c_mouseButton(p.x, p.y, 1, 1 << (wData > 0 ? 3 : 4));
-        c_mouseButton(p.x, p.y, 0, 1 << (wData > 0 ? 3 : 4));
-    }
+    mouseButton(p.x, p.y, 1, 1 << (wData > 0 ? 3 : 4));
+    mouseButton(p.x, p.y, 0, 1 << (wData > 0 ? 3 : 4));
     return stopEvent(e);
 }
 
 function onMouseMove(e) {
     var p = eventPos(e, conf.target);
-    if (c_mouseMove) { c_mouseMove(p.x, p.y); }
+    mouseMove(p.x, p.y);
 }
 
 function onKeyDown(e) {
-    if (! conf.focused) { return true; }
-    if (c_keyPress)     { c_keyPress(getKeysym(e), 1); }
+    keyPress(getKeysym(e), 1);
     return stopEvent(e);
 }
 
 function onKeyUp(e) {
-    if (! conf.focused) { return true; }
-    if (c_keyPress)     { c_keyPress(getKeysym(e), 0); }
+    keyPress(getKeysym(e), 0);
     return stopEvent(e);
 }
 
 function onMouseDisable(e) {
-    if (! conf.focused) { return true; }
     var p = eventPos(e, conf.target);
     // Stop propagation if inside canvas area
     if (p.x >= 0 && p.y >= 0 && p.x < c_width && p.y < c_height) {
@@ -172,35 +230,22 @@ function onMouseDisable(e) {
     return true;
 }
 
-//
-// Public API interface functions
-//
-
-that.start = function(keyPressFunc, mouseButtonFunc, mouseMoveFunc) {
-    var c;
-    debug(">> Canvas.start");
-
-    c = conf.target;
-    c_keyPress = keyPressFunc || null;
-    c_mouseButton = mouseButtonFunc || null;
-    c_mouseMove = mouseMoveFunc || null;
-
-    addEvent(conf.focusContainer, 'keydown', onKeyDown);
-    addEvent(conf.focusContainer, 'keyup', onKeyUp);
-    addEvent(c, 'mousedown', onMouseDown);
-    addEvent(c, 'mouseup', onMouseUp);
-    addEvent(c, 'mousemove', onMouseMove);
-    addEvent(c, (gecko) ? 'DOMMouseScroll' : 'mousewheel',
-            onMouseWheel);
+function c_modEvents(add) {
+    var c = conf.target, f = add ? addEvent : removeEvent;
+    f(conf.focusContainer, 'keydown', onKeyDown);
+    f(conf.focusContainer, 'keyup', onKeyUp);
+    f(c, 'mousedown', onMouseDown);
+    f(c, 'mouseup', onMouseUp);
+    f(c, 'mousemove', onMouseMove);
+    f(c, (gecko) ? 'DOMMouseScroll' : 'mousewheel', onMouseWheel);
 
     // Work around right and middle click browser behaviors
-    addEvent(conf.focusContainer, 'click', onMouseDisable);
-    addEvent(conf.focusContainer.body, 'contextmenu', onMouseDisable);
+    f(conf.focusContainer, 'click', onMouseDisable);
+    f(conf.focusContainer.body, 'contextmenu', onMouseDisable);
+}
 
-    debug("<< Canvas.start");
-};
 
-that.resize = function(width, height) {
+function c_resize(width, height) {
     var c = conf.target;
 
     c.width = width;
@@ -208,39 +253,38 @@ that.resize = function(width, height) {
 
     c_width  = c.offsetWidth;
     c_height = c.offsetHeight;
-};
+}
 
-that.clear = function() {
-    that.resize(640, 20);
-    conf.ctx.clearRect(0, 0, c_width, c_height);
-};
+function c_clear() {
+    c_resize(640, 20);
+    c_ctx.clearRect(0, 0, c_width, c_height);
+}
 
-that.stop = function() {
-    var c = conf.target;
-    removeEvent(conf.focusContainer, 'keydown', onKeyDown);
-    removeEvent(conf.focusContainer, 'keyup', onKeyUp);
-    removeEvent(c, 'mousedown', onMouseDown);
-    removeEvent(c, 'mouseup', onMouseUp);
-    removeEvent(c, 'mousemove', onMouseMove);
-    removeEvent(c, gecko?'DOMMouseScroll':'mousewheel', onMouseWheel);
+function c_fillRect(x, y, width, height, c) {
+    c_ctx.fillStyle = "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
+    c_ctx.fillRect(x, y, width, height);
+}
 
-    // Work around right and middle click browser behaviors
-    removeEvent(conf.focusContainer, 'click', onMouseDisable);
-    removeEvent(conf.focusContainer.body, 'contextmenu', onMouseDisable);
-};
+function c_copyImage(x1, y1, x2, y2, w, h) {
+    c_ctx.drawImage(conf.target, x1, y1, w, h, x2, y2, w, h);
+}
 
-that.fillRect = function(x, y, width, height, c) {
-    conf.ctx.fillStyle = "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
-    conf.ctx.fillRect(x, y, width, height);
-};
-
-that.copyImage = function(x1, y1, x2, y2, w, h) {
-    conf.ctx.drawImage(conf.target, x1, y1, w, h, x2, y2, w, h);
-};
+function c_blitImage(x, y, width, height, arr, offset) {
+    var img, i, j, data;
+    img = c_ctx.createImageData(width, height);
+    data = img.data;
+    for (i=0, j=offset; i < (width * height * 4); i=i+4, j=j+4) {
+        data[i + 0] = arr[j + 0];
+        data[i + 1] = arr[j + 1];
+        data[i + 2] = arr[j + 2];
+        data[i + 3] = 255; // Set Alpha
+    }
+    c_ctx.putImageData(img, x, y);
+}
 
 // Tile rendering functions
-that.getTile = function(x, y, width, height, color) {
-    var img, data = [], p, r, g, b, j, i;
+function c_getTile(x, y, width, height, color) {
+    var img, data = [], r, g, b, i;
     img = {'x': x, 'y': y, 'width': width, 'height': height,
            'data': data};
     r = color[0]; g = color[1]; b = color[2];
@@ -248,9 +292,9 @@ that.getTile = function(x, y, width, height, color) {
         data[i] = r; data[i+1] = g; data[i+2] = b;
     }
     return img;
-};
+}
 
-that.setSubTile = function(img, x, y, w, h, color) {
+function c_setSubTile(img, x, y, w, h, color) {
     var data, p, r, g, b, width, j, i, xend, yend;
     data = img.data;
     width = img.width;
@@ -262,130 +306,17 @@ that.setSubTile = function(img, x, y, w, h, color) {
             data[p+0] = r; data[p+1] = g; data[p+2] = b;
         }   
     } 
-};
+}
 
-that.putTile = function(img) {
-    that.blitImage(img.x, img.y, img.width, img.height, img.data, 0);
-};
-
-that.blitImage = function(x, y, width, height, arr, offset) {
-    var img, i, j, data;
-    img = conf.ctx.createImageData(width, height);
-    data = img.data;
-    for (i=0, j=offset; i < (width * height * 4); i=i+4, j=j+4) {
-        data[i + 0] = arr[j + 0];
-        data[i + 1] = arr[j + 1];
-        data[i + 2] = arr[j + 2];
-        data[i + 3] = 255; // Set Alpha
-    }
-    conf.ctx.putImageData(img, x, y);
-};
-
-// Sanity checks, and initialization
-if (! conf.target) { throw("target must be set"); }
-if (! conf.target.getContext) { throw("no getContext method"); }
-conf.ctx = conf.target.getContext('2d');
-if (! conf.ctx.createImageData) { throw("no createImageData method"); }
-
-that.clear();
-conf.render_mode = "createImageData rendering";
-conf.focused = true;
-return that;  // Return the public API interface
-
-}  // End of Canvas()
-
-
-// --- VNC/RFB core code ---------------------------------------------
-
-function RFB(conf) {
-
-var that           = {},         // Public API interface
-
-    // Pre-declare private functions used before definitions (jslint)
-    init_ws, init_msg, normal_msg, recv_message, framebufferUpdate,
-    fbUpdateRequest, checkEvents, keyEvent, pointerEvent,
-
-    // Private RFB namespace variables
-    rfb_host       = '',
-    rfb_port       = 5900,
-    rfb_password   = '',
-
-    rfb_state      = 'disconnected',
-    rfb_version    = 0,
-    rfb_auth_scheme= '',
-    rfb_shared     = 1,
-
-
-    // In preference order
-    encList = [1, 5, 0, -223],
-    encHandlers    = {},
-    encNames       = {
-        '1': 'COPYRECT',
-        '5': 'HEXTILE',
-        '0': 'RAW',
-        '-223': 'DesktopSize' },
-
-    ws             = null,   // Web Socket object
-    canvas         = null,   // Canvas object
-    sendTimer      = null,   // Send Queue check timer
-    connTimer      = null,   // connection timer
-    disconnTimer   = null,   // disconnection timer
-    msgTimer       = null,   // queued handle_message timer
-
-    // Receive and send queues
-    rQ             = [],     // Receive Queue
-    rQi            = 0,      // Receive Queue Index
-    rQmax          = 100000, // Max size before compacting
-    sQ             = "",     // Send Queue
-
-    // Frame buffer update state
-    FBU            = {
-        x : 0, y : 0,
-        w : 0, h : 0,
-        rects          : 0,
-        lines          : 0,  // RAW
-        tiles          : 0,  // HEXTILE
-        bytes          : 0,
-        enc            : 0,
-        subenc         : -1,
-        background     : null
-    },
-
-    fb_Bpp         = 4,
-    fb_depth       = 3,
-    fb_width       = 0,
-    fb_height      = 0,
-    fb_name        = "",
-
-    last_req_time  = 0,
-
-    test_mode        = false,
-
-    /* Mouse state */
-    btnMask          = 0,
-    mouse_arr        = [];
-
-
-// Configuration settings
-that.conf = conf || {}; // Make it public
-function cdef(v, defval, desc) { 
-    if (typeof conf[v] === 'undefined') { conf[v] = defval; } }
-
-cdef('target',            null, 'VNC viewport rendering Canvas');
-cdef('focusContainer',    document, 'Area that traps keyboard input');
-cdef('encrypt',           false, 'Use TLS/SSL/wss encryption');
-cdef('connectTimeout',    2,    'Time (s) to wait for connection');
-cdef('disconnectTimeout', 3,    'Time (s) to wait for disconnection');
-cdef('check_rate',        217,  'Timing (ms) of send/receive check');
-cdef('fbu_req_rate',      1413, 'Timing (ms) of frameBufferUpdate requests');
-cdef('updateState',       function() {}, 'callback: state update');
+function c_putTile(img) {
+    c_blitImage(img.x, img.y, img.width, img.height, img.data, 0);
+}
 
 //
-// Private functions
+// Private RFB/VNC functions
 //
 
 function init_vars() {
-    /* Reset state */
     rQ               = [];
     rQi              = 0;
     sQ               = "";
@@ -443,32 +374,28 @@ function rQwait(msg, num, goback) {
     return false;
 }
 
-
 //
 // Utility routines
 //
 
-
-/*
- * Running states:
- *   disconnected - idle state
- *   normal       - connected
- *
- * Page states:
- *   loaded       - page load, equivalent to disconnected
- *   connect      - starting initialization
- *   disconnect   - starting disconnect
- *   failed       - abnormal transition to disconnected
- *   fatal        - failed to load page, or fatal error
- *
- * VNC initialization states:
- *   ProtocolVersion
- *   Security
- *   Authentication
- *   password     - waiting for password, not part of RFB
- *   SecurityResult
- *   ServerInitialization
- */
+// Running states:
+//   disconnected - idle state
+//   normal       - connected
+//
+// Page states:
+//   loaded       - page load, equivalent to disconnected
+//   connect      - starting initialization
+//   disconnect   - starting disconnect
+//   failed       - abnormal transition to disconnected
+//   fatal        - failed to load page, or fatal error
+//
+// VNC initialization states:
+//   ProtocolVersion
+//   Security
+//   Authentication
+//   password     - waiting for password, not part of RFB
+//   SecurityResult
+//   ServerInitialization
 function updateState(state, statusMsg) {
     var func, cmsg, oldstate = rfb_state;
 
@@ -477,26 +404,24 @@ function updateState(state, statusMsg) {
         return;
     }
 
-    /* 
-     * These are disconnected states. A previous connect may
-     * asynchronously cause a connection so make sure we are closed.
-     */
+    // Disconnected states. A previous connect may asynchronously
+    // cause a connection so make sure we are closed.
     if (state in {'disconnected':1, 'loaded':1, 'connect':1,
                   'disconnect':1, 'failed':1, 'fatal':1}) {
         if (sendTimer) { sendTimer = clearInterval(sendTimer); }
         if (msgTimer)  { msgTimer  = clearInterval(msgTimer); }
 
-        if (canvas && canvas.conf.ctx) {
-            canvas.stop();
+        if (c_ctx) {
+            c_modEvents(false);
             if (log_level !== 'debug') {
-                canvas.clear();
+                c_clear();
             }
         }
 
         if (ws) {
             if ((ws.readyState === WebSocket.OPEN) || 
                (ws.readyState === WebSocket.CONNECTING)) {
-                info("Closing WebSocket connection");
+                debug("Closing WebSocket connection");
                 ws.close();
             }
             ws.onmessage = function (e) { return; };
@@ -563,7 +488,7 @@ function updateState(state, statusMsg) {
     }
 }
 
-/* base64 encode */
+// base64 encode
 function encode_message(arr) {
     var i, encStr = "";
     for (i=0; i < arr.length; i++) {
@@ -572,7 +497,7 @@ function encode_message(arr) {
     sQ += window.btoa(encStr);
 }
 
-/* base64 decode */
+// base64 decode
 function decode_message(data) {
     var decStr, i, j;
 
@@ -656,7 +581,7 @@ function send_array(arr) {
 }
 
 function genDES(password, challenge) {
-    var i, passwd = [], des;
+    var i, passwd = [];
     for (i=0; i < password.length; i++) {
         passwd.push(password.charCodeAt(i));
     }
@@ -692,21 +617,19 @@ checkEvents = function() {
     setTimeout(checkEvents, conf.check_rate);
 };
 
-function keyPress(keysym, down) {
-    var arr = keyEvent(keysym, down);
-    arr = arr.concat(fbUpdateRequest(1));
-    send_array(arr);
-}
+keyPress = function (keysym, down) {
+    send_array(keyEvent(keysym, down).concat(fbUpdateRequest(1)));
+};
 
-function mouseButton(x, y, down, bmask) {
+mouseButton = function(x, y, down, bmask) {
     btnMask = down ? btnMask |= bmask : btnMask ^= bmask;
     mouse_arr = mouse_arr.concat( pointerEvent(x, y) );
     flushClient();
-}
+};
 
-function mouseMove(x, y) {
+mouseMove = function(x, y) {
     mouse_arr = mouse_arr.concat( pointerEvent(x, y) );
-}
+};
 
 // Setup routines
 
@@ -718,7 +641,7 @@ init_ws = function() {
         uri = "ws://";
     }
     uri += rfb_host + ":" + rfb_port + "/";
-    info("connecting to " + uri);
+    debug("connecting to " + uri);
     ws = new WebSocket(uri);
 
     ws.onmessage = recv_message;
@@ -800,7 +723,7 @@ init_msg = function() {
             return;
         }
         sversion = rQshiftStr(12).substr(4,7);
-        info("Server ProtocolVersion: " + sversion);
+        debug("Server ProtocolVersion: " + sversion);
         switch (sversion) {
             case "003.003": rfb_version = 3.3; break;
             case "003.006": rfb_version = 3.3; break;  // UltraVNC
@@ -943,35 +866,35 @@ init_msg = function() {
             return;
         }
 
-        /* Screen size */
+        // Screen size
         fb_width  = rQshift16();
         fb_height = rQshift16();
 
-        /* PIXEL_FORMAT */
+        // PIXEL_FORMAT
         bpp            = rQ[rQi++];
         depth          = rQ[rQi++];
         big_endian     = rQ[rQi++];
         true_color     = rQ[rQi++];
 
-        info("Screen: " + fb_width + "x" + fb_height + 
+        debug("Screen: " + fb_width + "x" + fb_height + 
                   ", bpp: " + bpp + ", depth: " + depth +
                   ", big_endian: " + big_endian +
                   ", true_color: " + true_color);
 
-        /* Connection name/title */
+        // Connection name/title
         rQshiftStr(12);
         length   = rQshift32();
         fb_name = rQshiftStr(length);
 
-        canvas.resize(fb_width, fb_height);
-        canvas.start(keyPress, mouseButton, mouseMove);
+        c_resize(fb_width, fb_height);
+        c_modEvents(true);
 
         response = pixelFormat();
         response = response.concat(clientEncodings());
         response = response.concat(fbUpdateRequest(0));
         send_array(response);
         
-        /* Start pushing/polling */
+        // Start pushing/polling
         setTimeout(checkEvents, conf.check_rate);
 
         if (conf.encrypt) {
@@ -984,7 +907,7 @@ init_msg = function() {
 };
 
 
-/* Normal RFB/VNC server message handler */
+// Normal RFB/VNC server message handler
 normal_msg = function() {
     var length, msg_type = (FBU.rects === 0) ? rQ[rQi++] : 0;
     switch (msg_type) {
@@ -1025,7 +948,7 @@ framebufferUpdate = function() {
         if (rfb_state !== "normal") { return false; }
         if (rQwait("FBU")) { return false; }
         if (FBU.bytes === 0) {
-            /* New FramebufferUpdate */
+            // New FramebufferUpdate
             if (rQwait("rect header", 12)) { return false; }
 
             var h = rQshiftBytes(12); // header
@@ -1057,9 +980,8 @@ framebufferUpdate = function() {
     return true; // FBU finished
 };
 
-//
+
 // FramebufferUpdate encodings
-//
 
 encHandlers[0] = function display_raw() {
     if (FBU.lines === 0) {
@@ -1070,7 +992,7 @@ encHandlers[0] = function display_raw() {
         h = Math.min(FBU.lines, Math.floor(rQlen()/(FBU.w * fb_Bpp)));
     FBU.bytes = w * fb_Bpp; // At least a line
     if (rQwait("RAW")) { return false; }
-    canvas.blitImage(x, y, w, h, rQ, rQi);
+    c_blitImage(x, y, w, h, rQ, rQi);
     rQi += w * h * fb_Bpp;
     FBU.lines -= h;
 
@@ -1087,7 +1009,7 @@ encHandlers[1] = function display_copy_rect() {
     if (rQwait("COPYRECT", 4)) { return false; }
 
     var old_x = rQshift16(), old_y = rQshift16();
-    canvas.copyImage(old_x, old_y, FBU.x, FBU.y, FBU.w, FBU.h);
+    c_copyImage(old_x, old_y, FBU.x, FBU.y, FBU.w, FBU.h);
     FBU.rects -= 1;
     FBU.bytes = 0;
     return true;
@@ -1104,7 +1026,7 @@ encHandlers[5] = function display_hextile() {
         FBU.tiles = FBU.total_tiles;
     }
 
-    /* FBU.bytes comes in as 1, rQlen() at least 1 */
+    // FBU.bytes comes in as 1, rQlen() at least 1
     while (FBU.tiles > 0) {
         FBU.bytes = 1;
         if (rQwait("HEXTILE subencoding")) { return false; }
@@ -1122,7 +1044,7 @@ encHandlers[5] = function display_hextile() {
         w = Math.min(16, (FBU.x + FBU.w) - x);
         h = Math.min(16, (FBU.y + FBU.h) - y);
 
-        /* Figure out how much we are expecting */
+        // Figure out how much we are expecting
         if (subenc & 0x01) { // Raw
             FBU.bytes += w * h * fb_Bpp;
         } else {
@@ -1146,16 +1068,16 @@ encHandlers[5] = function display_hextile() {
 
         if (rQwait("hextile")) { return false; }
 
-        /* We know the encoding and have a whole tile */
+        // We know the encoding and have a whole tile
         FBU.subenc = rQ[rQi++];
         if (FBU.subenc === 0) {
-            canvas.fillRect(x, y, w, h, FBU.background);
+            c_fillRect(x, y, w, h, FBU.bg);
         } else if (FBU.subenc & 0x01) { // Raw
-            canvas.blitImage(x, y, w, h, rQ, rQi);
+            c_blitImage(x, y, w, h, rQ, rQi);
             rQi += FBU.bytes - 1;
         } else {
             if (FBU.subenc & 0x02) { // Background
-                FBU.background = rQ.slice(rQi, rQi + fb_Bpp);
+                FBU.bg = rQ.slice(rQi, rQi + fb_Bpp);
                 rQi += fb_Bpp;
             }
             if (FBU.subenc & 0x04) { // Foreground
@@ -1163,7 +1085,7 @@ encHandlers[5] = function display_hextile() {
                 rQi += fb_Bpp;
             }
 
-            tile = canvas.getTile(x, y, w, h, FBU.background);
+            tile = c_getTile(x, y, w, h, FBU.bg);
             if (FBU.subenc & 0x08) { // AnySubrects
                 subrects = rQ[rQi++];
                 for (s = 0; s < subrects; s++) {
@@ -1176,10 +1098,10 @@ encHandlers[5] = function display_hextile() {
 
                     xy = rQ[rQi++]; sx = (xy>>4);   sy = (xy&0xf);
                     wh = rQ[rQi++]; sw = (wh>>4)+1; sh = (wh&0xf)+1;
-                    canvas.setSubTile(tile, sx, sy, sw, sh, color);
+                    c_setSubTile(tile, sx, sy, sw, sh, color);
                 }
             }
-            canvas.putTile(tile);
+            c_putTile(tile);
         }
         FBU.bytes = 0;
         FBU.tiles -= 1;
@@ -1195,8 +1117,8 @@ encHandlers[-223] = function set_desktopsize() {
     debug(">> set_desktopsize");
     fb_width = FBU.w;
     fb_height = FBU.h;
-    canvas.clear();
-    canvas.resize(fb_width, fb_height);
+    c_clear();
+    c_resize(fb_width, fb_height);
     send_array(fbUpdateRequest(0)); // New non-incremental request
 
     FBU.bytes = 0;
@@ -1234,7 +1156,7 @@ that.sendPassword = function(passwd) {
 
 that.sendCtrlAltDel = function() {
     if (rfb_state !== "normal") { return false; }
-    info("Sending Ctrl-Alt-Del");
+    debug("Sending Ctrl-Alt-Del");
     var arr = [];
     arr = arr.concat(keyEvent(0xFFE3, 1)); // Control
     arr = arr.concat(keyEvent(0xFFE9, 1)); // Alt
@@ -1252,10 +1174,10 @@ that.sendKey = function(code, down) {
     if (rfb_state !== "normal") { return false; }
     var arr = [];
     if (typeof down !== 'undefined') {
-        info("Sending key code (" + (down ? "down" : "up") + "): " + code);
+        debug("Sending key code (" + (down ? "down" : "up") + "): " + code);
         arr = arr.concat(keyEvent(code, down ? 1 : 0));
     } else {
-        info("Sending key code (down + up): " + code);
+        debug("Sending key code (down + up): " + code);
         arr = arr.concat(keyEvent(code, 1));
         arr = arr.concat(keyEvent(code, 0));
     }
@@ -1281,8 +1203,10 @@ that.testMode = function(override_send_array) {
 
 // Sanity checks and initialization
 try {
-    canvas = new Canvas({'target': conf.target,
-                         'focusContainer': conf.focusContainer});
+    if (! conf.target) { throw("target must be set"); }
+    if (! conf.target.getContext) { throw("no getContext method"); }
+    c_ctx = conf.target.getContext('2d');
+    if (! c_ctx.createImageData) { throw("no createImageData method"); }
 } catch (exc) {
     error("Canvas exception: " + exc);
     updateState('fatal', "No working Canvas");
@@ -1293,9 +1217,9 @@ if (!window.WebSocket) {
     return;
 }
 
+c_clear();
 init_vars();
-updateState('loaded', 'noVNC ready: native WebSockets, ' + 
-    canvas.conf.render_mode);
+updateState('loaded', 'noVNC ready: native WebSockets');
 return that;  // Return the public API interface
 
 }  // End of RFB()
@@ -1388,7 +1312,6 @@ S7 = [a,w,v,z,e,v,s,x,y,a,z,t,d,b,w,f,u,s,q,u,t,c,x,q,c,e,f,y,r,d,b,r,
 mix(18,28,6,12);
 S8 = [v,e,a,y,b,v,d,b,q,c,y,r,x,s,e,d,c,t,u,f,r,q,w,x,f,z,z,w,t,u,s,a,
       s,a,x,e,d,w,e,s,u,d,t,c,w,b,a,v,z,y,q,t,c,u,v,z,y,r,r,f,f,q,b,x];
-
 
 // Encrypt 8 bytes of text
 function enc8(text) {
