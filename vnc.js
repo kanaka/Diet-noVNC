@@ -466,7 +466,7 @@ function genDES(password, challenge) {
     for (i=0; i < password.length; i++) {
         passwd.push(password.charCodeAt(i));
     }
-    return (new DES(passwd)).encrypt(challenge);
+    return DES(passwd, challenge);
 }
 
 keyPress = function (keysym, down) {
@@ -957,7 +957,7 @@ return api;  // Public API interface
 //     Copyright (C) 1996 by Jef Poskanzer <jef@acme.com>
 // See docs/LICENSE.DES for full license/copyright
 
-DES = function(passwd) {
+DES = function(passwd, text) {
 
 var PC2, totrot, i,j,l,m,n,o, pc1m = [], pcr = [], kn = [],
     a,b,c,d,e,f, q,r,s,t,u,v,w,x,y, z = 0x0,
@@ -1040,8 +1040,8 @@ S8 = [v,e,a,y,b,v,d,b,q,c,y,r,x,s,e,d,c,t,u,f,r,q,w,x,f,z,z,w,t,u,s,a,
       s,a,x,e,d,w,e,s,u,d,t,c,w,b,a,v,z,y,q,t,c,u,v,z,y,r,r,f,f,q,b,x];
 
 // Encrypt 8 bytes of text
-function enc8(text) {
-    var i = 0, b = text.slice(), fval, keysi = 0,
+function enc8(t) {
+    var i = 0, b = t.slice(), fval, keysi = 0,
         l, r, x; // left, right, accumulator
 
     // Squash 8 bytes to 2 ints
@@ -1111,10 +1111,6 @@ function enc8(text) {
 }
 
 // Encrypt 16 bytes of text using passwd as key
-function encrypt16(t) {
-    return enc8(t.slice(0,8)).concat(enc8(t.slice(8,16)));
-}
-
-return {'encrypt': encrypt16}; // Public interface
+return enc8(text.slice(0,8)).concat(enc8(text.slice(8,16)));
 
 }; // End of DES()
