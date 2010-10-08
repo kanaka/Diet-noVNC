@@ -27,8 +27,8 @@ function RFB(target, focusContainer, stateCallback, encrypt, shared) {
 var api = {}, // Public API interface
 
     // Pre-declare (jslint)
-    init_ws, init_msg, normal_msg, recv_message, framebufferUpdate,
-    fbUpdateRequest, checkEvents, keyEvent, pointerEvent,
+    init_ws, init_msg, normal_msg, framebufferUpdate,
+    fbUpdateRequest, keyEvent, pointerEvent,
     keyPress, mouseButton, mouseMove,
 
     // Private Canvas namespace variables
@@ -39,9 +39,8 @@ var api = {}, // Public API interface
 
     // Private RFB namespace variables
     rfb_host = '',  rfb_port = 5900,  rfb_password = '',
-    rfb_state = '', rfb_version = "", rfb_auth = '',
-    connTimeout = 2, discTimeout = 3,
-    check_rate = 217, fbu_req_rate = 1413,
+    rfb_state = '', rfb_version = 0, rfb_auth = '',
+    connTimeout = 2, discTimeout = 3, fbu_req_rate = 1413,
     offStates = {'disconnected':1, 'loaded':1, 'connect':1,
                  'disconnect':1, 'failed':1, 'fatal':1},
 
@@ -278,21 +277,20 @@ function rQlen() {
     return rQ.length - rQi;
 }
 
-function rQshift16() {
+function rQ2() {
     return (rQ[rQi++] << 8) + rQ[rQi++];
 }
-function rQshift32() {
+function rQ4() {
     return (rQ[rQi++] << 24) + (rQ[rQi++] << 16) +
            (rQ[rQi++] <<  8) +  rQ[rQi++];
 }
-function rQshiftStr(len) {
-    var arr = rQ.slice(rQi, rQi + len);
+function rQstr(len) {
     rQi += len;
-    return arr.map(function (num) {
-            return String.fromCharCode(num); } ).join('');
+    return rQ.slice(rQi-len, rQi).map(function (n) {
+            return String.fromCharCode(n); } ).join('');
 
 }
-function rQshiftBytes(len) {
+function rQbytes(len) {
     rQi += len;
     return rQ.slice(rQi-len, rQi);
 }
@@ -379,10 +377,13 @@ function state(newS, statusMsg) {
 
     switch (newS) {
     case 'connect':
+        init_vars();
+        if (test_mode) {
+            return state('ProtocolVersion', "Starting VNC handshake");
+        }
         connTimer = setTimeout(function () {
                 fail("Connect timeout");
             }, connTimeout * 1000);
-        init_vars();
         init_ws();
         break; // onopen transitions to 'ProtocolVersion'
 
@@ -438,7 +439,7 @@ function handle_message() {
     }
 }
 
-recv_message = function(e) {
+function recv_msg(e) {
     try {
         var decStr, i = rQ.length, j;
         decStr = window.atob(e.data); // base64 decode
@@ -452,7 +453,7 @@ recv_message = function(e) {
         handle_message();
     } catch (exc) {
         if (typeof exc.stack !== 'undefined') {
-            warn("recv_message exception: " + exc.stack);
+            warn("recv_msg exception: " + exc.stack);
         }
         if (typeof exc.name !== 'undefined') {
             fail(exc.name + ": " + exc.message);
@@ -462,19 +463,10 @@ recv_message = function(e) {
     }
 };
 
-// overridable for testing
-function send_array(arr) {
-    var i, encStr = "";
-    for (i=0; i < arr.length; i++) {
-        encStr += String.fromCharCode(arr[i]);
-    }
-    sQ += window.btoa(encStr); // base64 encode
-    if (ws.bufferedAmount === 0) {
-        ws.send(sQ);
-        sQ = "";
-    } else {
-        debug("Delaying send");
-    }
+// base64 encode and put on send queue, overridable for testing
+function send_msg(arr) {
+    sQ += window.btoa(arr.map(function (c) {
+            return String.fromCharCode(c); } ).join(''));
 }
 
 function genDES(password, challenge) {
@@ -485,47 +477,17 @@ function genDES(password, challenge) {
     return (new DES(passwd)).encrypt(challenge);
 }
 
-function flushClient() {
-    if (mouse_arr.length > 0) {
-        send_array(mouse_arr);
-        setTimeout(function() {
-                send_array(fbUpdateRequest(1));
-            }, 50);
-
-        mouse_arr = [];
-        return true;
-    } else {
-        return false;
-    }
-}
-
-// overridable for testing
-checkEvents = function() {
-    var now;
-    if (rfb_state === 'normal') {
-        if (! flushClient()) {
-            now = new Date().getTime();
-            if (now > last_req_time + fbu_req_rate) {
-                last_req_time = now;
-                send_array(fbUpdateRequest(1));
-            }
-        }
-    }
-    setTimeout(checkEvents, check_rate);
-};
-
 keyPress = function (keysym, down) {
-    send_array(keyEvent(keysym, down).concat(fbUpdateRequest(1)));
+    send_msg(keyEvent(keysym, down).concat(fbUpdateRequest(1)));
 };
 
 mouseButton = function(x, y, down, bmask) {
     btnMask = down ? btnMask |= bmask : btnMask ^= bmask;
-    mouse_arr = mouse_arr.concat( pointerEvent(x, y) );
-    flushClient();
+    send_msg( pointerEvent(x, y).concat(fbUpdateRequest(1)) );
 };
 
 mouseMove = function(x, y) {
-    mouse_arr = mouse_arr.concat( pointerEvent(x, y) );
+    send_msg( pointerEvent(x, y).concat(fbUpdateRequest(1)) );
 };
 
 // Setup routines
@@ -536,7 +498,7 @@ init_ws = function() {
     debug("connecting to " + uri);
 
     ws = new WebSocket(uri);
-    ws.onmessage = recv_message;
+    ws.onmessage = recv_msg;
     ws.onopen = function(e) {
         debug(">> WebSocket.onopen");
         if (rfb_state === "connect") {
@@ -607,48 +569,37 @@ init_msg = function() {
     switch (rfb_state) {
 
     case 'ProtocolVersion' :
-        if (rQlen() < 12) {
-            return fail("Incomplete protocol version");
-        }
-        rfb_version = rQshiftStr(12).substr(4,7);
-        if (rfb_version in {"003.003":1, "003.006":1,
-                            "003.007":1, "003.008":1}) {
+        if (rQlen()<12) { return fail("Incomplete ProtocolVersion"); }
+        rfb_version = parseInt(rQstr(12).substr(10,1), 10);
+        if (rfb_version in {3:1, 6:1, 7:1, 8:1}) {
             debug("Server ProtocolVersion: " + rfb_version);
         } else {
             return fail("Invalid server version " + rfb_version);
         }
 
-        if (! test_mode) {
-            sendTimer = setInterval(function() {
-                    // Send updates either at a rate of one update
-                    // every 50ms, or whatever slower rate the network
-                    // can handle.
-                    if (ws.bufferedAmount === 0) {
-                        if (sQ) {
-                            ws.send(sQ);
-                            sQ = "";
-                        }
-                    } else {
-                        debug("Delaying send");
-                    }
-                }, 50);
-        }
+        // Send every 50ms, or at max network rate
+        sendTimer = setInterval(function() {
+                if (sQ && ws.bufferedAmount === 0) {
+                    if (! test_mode) { ws.send(sQ); }
+                    sQ = "";
+                } else if (sQ) {
+                    debug("Delaying send");
+                } }, 25);
 
-        send_array(("RFB " + rfb_version + "\n").split('').map(
+        send_msg(("RFB 003.00" + rfb_version + "\n").split('').map(
             function (chr) { return chr.charCodeAt(0); } ) );
-        state('Security', "Sent ProtocolVersion: " + rfb_version);
+        state('Security', "Sent ProtocolVersion: 003.00" + rfb_version);
         break;
 
     case 'Security' :
-        if (rfb_version in {"003.007":1, "003.008":1}) {
+        if (rfb_version >= 7) {
             num_types = rQ[rQi++];
             if (rQwait("security type", num_types, 1)) { return false; }
             if (num_types === 0) {
-                reason = rQshiftStr(rQshift32());
-                return fail("Security failure: " + reason);
+                return fail("Security failure: " + rQstr(rQ4()));
             }
             rfb_auth = 0;
-            types = rQshiftBytes(num_types);
+            types = rQbytes(num_types);
             debug("Server security types: " + types);
             for (i=0; i < types.length; i+=1) {
                 if ((types[i] > rfb_auth) && (types[i] < 3)) {
@@ -659,10 +610,10 @@ init_msg = function() {
                 return fail("Unknown security types: " + types);
             }
             
-            send_array([rfb_auth]);
+            send_msg([rfb_auth]);
         } else {
             if (rQwait("security scheme", 4)) { return false; }
-            rfb_auth = rQshift32();
+            rfb_auth = rQ4();
         }
         state('Authentication', "Authenticating scheme: " + rfb_auth);
         init_msg();  // "fallthrough" (workaround JSLint)
@@ -672,8 +623,7 @@ init_msg = function() {
         switch (rfb_auth) {
             case 0:  // connection failed
                 if (rQwait("auth reason", 4)) { return false; }
-                reason = rQshiftStr(rQshift32());
-                return fail("Auth failure: " + reason);
+                return fail("Auth failure: " + rQstr(rQ4()));
             case 1:  // no authentication
                 state('SecurityResult');
                 break;
@@ -683,7 +633,7 @@ init_msg = function() {
                 }
                 if (rQwait("auth challenge", 16)) { return false; }
                 //debug("Sending DES encrypted auth response");
-                send_array(genDES(rfb_password, rQshiftBytes(16)));
+                send_msg(genDES(rfb_password, rQbytes(16)));
                 state('SecurityResult');
                 break;
             default:
@@ -695,36 +645,32 @@ init_msg = function() {
         if (rQlen() < 4) {
             return fail("Invalid VNC auth response");
         }
-        switch (rQshift32()) {
+        switch (rQ4()) {
             case 0:  // OK
                 state('ServerInitialisation', "Authentication OK");
                 break;
             case 1:  // failed
-                if (rfb_version in {"003.008":1}) {
-                    length = rQshift32();
+                reason = "Authentication failed";
+                if (rfb_version >= 8) {
+                    length = rQ4();
                     if (rQwait("SecurityResult reason", length, 8)) {
                         return false;
                     }
-                    reason = rQshiftStr(length);
-                    fail(reason);
-                } else {
-                    fail("Authentication failed");
+                    reason = rQstr(length);
                 }
-                return;
+                return fail(reason);
             case 2:  // too-many
                 return fail("Too many auth attempts");
         }
-        send_array([shared ? 1 : 0]); // ClientInitialisation
+        send_msg([shared ? 1 : 0]); // ClientInitialisation
         break;
 
     case 'ServerInitialisation' :
-        if (rQlen() < 24) {
-            return fail("Invalid server initialisation");
-        }
+        if (rQlen()<24) { return fail("Invalid server init msg"); }
 
         // Screen size
-        fb_width  = rQshift16();
-        fb_height = rQshift16();
+        fb_width  = rQ2();
+        fb_height = rQ2();
         debug("Screen: " + fb_width + "x" + fb_height);
 
         // PIXEL_FORMAT
@@ -732,8 +678,8 @@ init_msg = function() {
         rQi += 4; // ignore server bpp, depth, true_color
 
         // Connection name/title
-        rQshiftStr(12); // padding
-        fb_name = rQshiftStr(rQshift32());
+        rQi+=12; // padding
+        fb_name = rQstr(rQ4());
 
         c_resize(fb_width, fb_height);
         c_modEvents(true);
@@ -741,11 +687,8 @@ init_msg = function() {
         response = pixelFormat();
         response = response.concat(clientEncodings());
         response = response.concat(fbUpdateRequest(0));
-        send_array(response);
+        send_msg(response);
         
-        // Start pushing/polling
-        setTimeout(checkEvents, check_rate);
-
         if (encrypt) {
             state('normal', "Connected (encrypted) to: " + fb_name);
         } else {
@@ -759,23 +702,15 @@ init_msg = function() {
 normal_msg = function() {
     var length, msg_type = (FBU.rects === 0) ? rQ[rQi++] : 0;
     switch (msg_type) {
-    case 0:  // FramebufferUpdate
-        return framebufferUpdate(); // false means need more data
-    case 1:  // SetColourMapEntries
-        fail("Error: got SetColourMapEntries");
+    case 0: return framebufferUpdate(); // false: need more data
+    case 1: fail("Error: got SetColourMapEntries"); break;
+    case 2: warn("Bell (unsupported)"); break;
+    case 3:
+        if (rQwait("ServerCutText", 8, 1)) { return false; }
+        rQi+=3; // Pad
+        debug("ServerCutText: " + rQstr(rQ4()));
         break;
-    case 2:  // Bell
-        warn("Bell (unsupported)");
-        break;
-    case 3:  // ServerCutText
-        if (rQwait("ServerCutText header", 7, 1)) { return false; }
-        rQshiftBytes(3);  // Padding
-        length = rQshift32();
-        if (rQwait("ServerCutText", length, 8)) { return false; }
-        debug("ServerCutText: " + rQshiftStr(length));
-        break;
-    default:
-        fail("Illegal message type: " + msg_type);
+    default: fail("Illegal message type: " + msg_type);
     }
     return true;
 };
@@ -788,7 +723,7 @@ framebufferUpdate = function() {
             return false;
         }
         rQi++;
-        FBU.rects = rQshift16();
+        FBU.rects = rQ2();
         FBU.bytes = 0;
     }
 
@@ -799,25 +734,23 @@ framebufferUpdate = function() {
             // New FramebufferUpdate
             if (rQwait("rect header", 12)) { return false; }
 
-            var h = rQshiftBytes(12); // header
+            var h = rQbytes(12); // header
             FBU.x   = (h[0]<<8)+h[1];
             FBU.y   = (h[2]<<8)+h[3];
             FBU.w   = (h[4]<<8)+h[5];
             FBU.h   = (h[6]<<8)+h[7];
             FBU.enc = (h[8]<<24)+(h[9]<<16)+(h[10]<<8)+h[11];
 
-            if (FBU.enc in encFunc) {
-                // Debug:
-                /*
-                var msg =  "FramebufferUpdate rects:" + FBU.rects;
-                msg += " x: " + FBU.x + " y: " + FBU.y;
-                msg += " width: " + FBU.w     + " height: " + FBU.h;
-                msg += " encoding:" + FBU.enc + ", rQlen(): " + rQlen();
-                debug(msg);
-                */
-            } else {
+            if (! FBU.enc in encFunc) {
                 return fail("Illegal encoding " + FBU.enc);
             }
+            /*
+            // Debug:
+            debug("FBU rects:" + FBU.rects +
+                    " x: " + FBU.x + " y: " + FBU.y +
+                    " w: " + FBU.w + " h: " + FBU.h +
+                    " enc:" + FBU.enc + " rQlen(): " + rQlen());
+            */
         }
 
         if (! encFunc[FBU.enc]()) { return false; }
@@ -853,7 +786,7 @@ encFunc[0] = function display_raw() {
 encFunc[1] = function display_copy_rect() {
     if (rQwait("COPYRECT", 4)) { return false; }
 
-    var old_x = rQshift16(), old_y = rQshift16();
+    var old_x = rQ2(), old_y = rQ2();
     c_copyImage(old_x, old_y, FBU.x, FBU.y, FBU.w, FBU.h);
     FBU.rects -= 1;
     FBU.bytes = 0;
@@ -892,10 +825,7 @@ encFunc[5] = function display_hextile() {
         if (subenc & 0x01) { // Raw
             FBU.bytes += w * h * fb_Bpp;
         } else {
-            if (subenc & 0x02) { // Background
-                FBU.bytes += fb_Bpp;
-            }
-            if (subenc & 0x04) { // Foreground
+            if (subenc & 0x06) { // Background or Foreground
                 FBU.bytes += fb_Bpp;
             }
             if (subenc & 0x08) { // AnySubrects
@@ -909,7 +839,6 @@ encFunc[5] = function display_hextile() {
                 }
             }
         }
-
         if (rQwait("hextile")) { return false; }
 
         // We know the encoding and have a whole tile
@@ -925,7 +854,7 @@ encFunc[5] = function display_hextile() {
                 rQi += fb_Bpp;
             }
             if (FBU.subenc & 0x04) { // Foreground
-                FBU.foreground = rQ.slice(rQi, rQi + fb_Bpp);
+                FBU.fg = rQ.slice(rQi, rQi + fb_Bpp);
                 rQi += fb_Bpp;
             }
 
@@ -937,7 +866,7 @@ encFunc[5] = function display_hextile() {
                         color = rQ.slice(rQi, rQi + fb_Bpp);
                         rQi += fb_Bpp;
                     } else {
-                        color = FBU.foreground;
+                        color = FBU.fg;
                     }
 
                     xy = rQ[rQi++]; sx = (xy>>4);   sy = (xy&0xf);
@@ -962,7 +891,7 @@ encFunc[-223] = function set_desktopsize() {
     fb_width = FBU.w;
     fb_height = FBU.h;
     c_resize(fb_width, fb_height);
-    send_array(fbUpdateRequest(0)); // New non-incremental request
+    send_msg(fbUpdateRequest(0)); // New non-incremental request
 
     FBU.bytes = 0;
     FBU.rects -= 1;
@@ -989,12 +918,6 @@ api.disconnect = function() {
     state('disconnect', 'Disconnecting');
 };
 
-api.sendPassword = function(passwd) {
-    rfb_password = passwd;
-    rfb_state = "Authentication";
-    setTimeout(init_msg, 1);
-};
-
 api.sendCAD = function() {
     if (rfb_state !== "normal") { return false; }
     debug("Sending Ctrl-Alt-Del");
@@ -1006,23 +929,15 @@ api.sendCAD = function() {
     arr = arr.concat(keyEvent(0xFFE9, 0)); // Alt
     arr = arr.concat(keyEvent(0xFFE3, 0)); // Control
     arr = arr.concat(fbUpdateRequest(1));
-    send_array(arr);
+    send_msg(arr);
     return false;
 };
 
-api.testMode = function(override_send_array) {
+api.testMode = function(override_send_msg) {
     // Overridable internal functions for testing
     test_mode = true;
-    send_array = override_send_array;
-    api.recv_message = recv_message;  // Expose it
-
-    checkEvents = stub;
-    api.connect = function(host, port, password) {
-            rfb_host = host;
-            rfb_port = port;
-            rfb_password = password;
-            state('ProtocolVersion', "Starting VNC handshake");
-        };
+    send_msg = override_send_msg;
+    api.recv_message = recv_msg;  // Expose it
 };
 
 // Sanity checks and initialization
@@ -1041,6 +956,10 @@ if (!window.WebSocket) {
 
 c_resize(640, 20);
 init_vars();
+setInterval(function () {
+    if (rfb_state === 'normal') {
+        send_msg(fbUpdateRequest(1));
+    } }, fbu_req_rate); // FBUrequest poll
 state('loaded', 'noVNC ready: native WebSockets');
 return api;  // Public API interface
 
