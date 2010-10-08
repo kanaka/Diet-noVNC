@@ -27,7 +27,7 @@ function RFB(target, focusContainer, stateCallback, encrypt, shared) {
 var api = {}, // Public API interface
 
     // Pre-declare (jslint)
-    init_ws, init_msg, normal_msg, framebufferUpdate,
+    fail, init_ws, init_msg, normal_msg, framebufferUpdate,
     fbUpdateRequest, keyEvent, pointerEvent,
     keyPress, mouseButton, mouseMove,
 
@@ -57,7 +57,7 @@ var api = {}, // Public API interface
         rects  : 0,
         lines  : 0,  // RAW
         tiles  : 0,  // HEXTILE
-        bytes  : 0,
+        bytes  : 0
     },
 
     fb_Bpp         = 4,
@@ -65,7 +65,6 @@ var api = {}, // Public API interface
     fb_width       = 0,
     fb_height      = 0,
     fb_name        = "",
-    last_req_time  = 0,
     test_mode      = false,
     // Mouse state
     btnMask        = 0,
@@ -409,23 +408,20 @@ function state(newS, statusMsg) {
     }
     return false;
 }
-function fail(msg) { return state('failed', msg); } 
+fail = function (msg){ return state('failed', msg); };
 
 function handle_message() {
     if (rQlen() === 0) {
-        warn("handle_message called on empty receive queue");
+        warn("Empty receive queue");
     } else if (rfb_state in offStates) {
-        error("Got data while disconnected");
+        error("Data while disconnected");
     } else if (rfb_state === 'normal') {
         if (normal_msg() && rQlen() > 0) {
             // true means we can continue processing
             // Give other events a chance to run
-            if (msgTimer) {
-                debug("More data to process, existing timer");
-            } else {
-                debug("More data to process, creating timer");
+            if (! msgTimer) {
                 msgTimer = setTimeout(function () {
-                            msgTimer = null; handle_message(); }, 10);
+                        msgTimer = null; handle_message(); }, 10);
             }
         }
         // Compact the queue
@@ -443,17 +439,13 @@ function recv_msg(e) {
     try {
         var decStr, i = rQ.length, j;
         decStr = window.atob(e.data); // base64 decode
-        if (!decStr) {
-            debug("Ignoring empty message");
-            return;
-        }
         for (j=0; j < decStr.length; i++, j++) {
             rQ[i] = decStr.charCodeAt(j);
         }
         handle_message();
     } catch (exc) {
         if (typeof exc.stack !== 'undefined') {
-            warn("recv_msg exception: " + exc.stack);
+            warn("exception: " + exc.stack);
         }
         if (typeof exc.name !== 'undefined') {
             fail(exc.name + ": " + exc.message);
@@ -461,7 +453,7 @@ function recv_msg(e) {
             fail(exc);
         }
     }
-};
+}
 
 // base64 encode and put on send queue, overridable for testing
 function send_msg(arr) {
@@ -700,7 +692,7 @@ init_msg = function() {
 
 // Normal RFB/VNC server message handler
 normal_msg = function() {
-    var length, msg_type = (FBU.rects === 0) ? rQ[rQi++] : 0;
+    var msg_type = (FBU.rects === 0) ? rQ[rQi++] : 0;
     switch (msg_type) {
     case 0: return framebufferUpdate(); // false: need more data
     case 1: fail("Error: got SetColourMapEntries"); break;
@@ -903,14 +895,11 @@ encFunc[-223] = function set_desktopsize() {
 
 // Public API interface functions
 
-api.connect = function(host, port, password) {
-    rfb_host       = host;
-    rfb_port       = port;
-    rfb_password   = (password !== undefined)   ? password : "";
-
-    if ((!rfb_host) || (!rfb_port)) {
-        return fail("Must set host and port");
-    }
+api.connect = function(h, p, pw) {
+    if (!h || !p) { return fail("Must set host and port"); }
+    rfb_host     = h;
+    rfb_port     = p;
+    rfb_password = (pw !== undefined) ? pw : "";
     state('connect');
 };
 
@@ -921,15 +910,11 @@ api.disconnect = function() {
 api.sendCAD = function() {
     if (rfb_state !== "normal") { return false; }
     debug("Sending Ctrl-Alt-Del");
-    var arr = [];
-    arr = arr.concat(keyEvent(0xFFE3, 1)); // Control
-    arr = arr.concat(keyEvent(0xFFE9, 1)); // Alt
-    arr = arr.concat(keyEvent(0xFFFF, 1)); // Delete
-    arr = arr.concat(keyEvent(0xFFFF, 0)); // Delete
-    arr = arr.concat(keyEvent(0xFFE9, 0)); // Alt
-    arr = arr.concat(keyEvent(0xFFE3, 0)); // Control
-    arr = arr.concat(fbUpdateRequest(1));
-    send_msg(arr);
+    var k, arr = [];
+    for (k in {0xffe3:1, 0xffe9:1, 0xffff:1}) {
+        arr = keyEvent(k, 1).concat(arr.concat(keyEvent(k, 0)));
+    }
+    send_msg(arr.concat(fbUpdateRequest(1)));
     return false;
 };
 
@@ -951,7 +936,7 @@ try {
     return state('fatal', "No working Canvas");
 }
 if (!window.WebSocket) {
-    return state('fatal', "Native WebSockets support is required");
+    return state('fatal', "No native WebSockets");
 }
 
 c_resize(640, 20);
