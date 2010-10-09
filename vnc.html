@@ -1,101 +1,12 @@
-<html>
-
-<!-- 
-Diet noVNC: noVNC without the sugar.
-Copyright (C) 2010 Joel Martin
-Licensed under LGPL-3 (see LICENSE.txt)
-
-Connect parameters are provided in query string:
-    http://example.com/?host=HOST&port=PORT&encrypt=1
--->
-<head>
-    <title>VNC Client</title>
-    <!--<script src="vnc.js"></script>-->
-    <script src="vnc-comp.js"></script>
-
-    <style>
-        body { margin: 10px; }
-        #controls { overflow: hidden; }
-        #controls ul { list-style: none; margin: 0; padding: 0; }
-        #controls li { float: left; margin-right: 15px; }
-        #controls input { width: 85px; }
-        #screen  { display: table; }
-        #top_bar { margin-top: 5px; }
-        #npwd    { margin-bottom: 0px; }
-        .sNormal { background: #eee; }
-        .sError  { background: #f44; }
-        .sWarn   { background: #ff4; }
-    </style>
-</head>
-
+<html><head><title>Diet noVNC</title></head>
 <body>
-    <div id="controls"> <ul>
-        <li>Host: <input id="host" type="text"></li>
-        <li>Port: <input id="port" type="text"></li>
-        <li>Password: <input id="passwd" type="password"></li>
-        <li><input id="cBtn" type="button" value="Loading" disabled></li>
-    </ul> </div>
-
-    <div id="screen">
-        <div id="top_bar" class="top_bar">
-            <table border=0 width="100%"><tr>
-                <td><div id="status">Loading</div></td>
-                <td width="1%">
-                    <input id="cadBtn" type=button value="Send CtrlAltDel">
-                </td>
-            </tr></table>
-        </div>
-        <canvas id="vnc" width="640px" height="20px"></canvas>
-    </div>
-
-    <script>
-    /*jslint white: false */
-    /*global window, RFB, */
-    "use strict";
-
-    var $ = function (id) { return document.getElementById(id); };
-
-    function getVar(name) {
-        var re = new RegExp('[?][^#]*' + name + '=([^&#]*)');
-        return (location.href.match(re) || ['', null])[1];
-    }
-
-    function state(rfb, newS, oldS, msg) {
-        var s = $('status'), c = $('cBtn'), cad = $('cadBtn'), klass;
-        cad.disabled = true;
-        cad.onclick = rfb.sendCAD;
-        c.disabled = false;
-        c.value = "Connect";
-        c.onclick = function () { rfb.connect(
-            $('host').value, $('port').value, $('passwd').value); };
-        if (newS === 'normal') {
-            c.value = "Disconnect";
-            c.onclick = rfb.disconnect;
-            cad.disabled = false;
-        } else if (newS in {'fatal':1, 'failed':1}) {
-            c.disabled = true;
-        }
-        switch (newS) {
-            case 'failed':
-            case 'fatal':        klass = "sError";  break;
-            case 'loaded':
-            case 'normal':
-            case 'disconnected': klass = "sNormal"; break;
-            default:             klass = "sWarn";
-        }
-
-        if (msg) {
-            $('top_bar').setAttribute("class", klass);
-            s.innerHTML = msg;
-        }
-    }
-
-    window.onload = function () {
-        $('host').value = getVar('host');
-        $('port').value = getVar('port');
-        $('passwd').value = getVar('password');
-        new RFB($('vnc'), document, state, getVar('encrypt'), true);
-    };
-    </script>
-</body>
-</html>
+Host <input id=h type=text> &nbsp; Port <input id=p type=text>
+<input id=CB type=button value=Loading disabled>
+<div id=V style="display: table;">
+ <div id=B><table width="100%"><tr>
+  <td><div id=S>Loading</div></td>
+  <td width="1%"><input id=CAD type=button value=CtlAltDel></td>
+ </tr></table></div>
+ <canvas id=vnc></canvas>
+</div>
+<script src="vnc.js"></script></body></html>

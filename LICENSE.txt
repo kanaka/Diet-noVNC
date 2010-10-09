@@ -1,3 +1,0 @@
-noVNC is licensed under the LGPL version 3 (see docs/LICENSE.GPL-3 and
-docs/LICENSE.LGPL-3) with the exception of DES code in vnc.js which
-various BSD style licenses.
