@@ -25,22 +25,22 @@ switch (log_level) {
 function RFB(target, focusContainer, stateCallback, encrypt, shared) {
 
 var api = {}, // Public API interface
+    mM = Math.min, mC = Math.ceil, mF = Math.floor, // shortcuts
 
     // Pre-declare (jslint)
     fail, init_ws, init_msg, normal_msg, framebufferUpdate,
-    fbUpdateRequest, keyEvent, pointerEvent,
-    keyPress, mouseButton, mouseMove,
-
-    // Private Canvas namespace variables
-    c_ctx, c_width = 0, c_height = 0,
+    fbUpdateRequest, keyEvent, pointerEvent, keyPress, mouseButton, mouseMove,
 
     // Detect gecko engine (code from mootools).
     gecko = (function() { return (!document.getBoxObjectFor && window.mozInnerScreenX == null) ? false : true; }()),
 
+    // Private Canvas namespace variables
+    c_ctx, c_width = 0, c_height = 0,
+
     // Private RFB namespace variables
     host = '', port = 5900, password = '',
     rfb_state = '', rfb_ver = 0, rfb_auth = '',
-    connTimeout = 2, discTimeout = 3, fbu_req_rate = 1413,
+    connTimeout = 2, discTimeout = 3, FBUreq_rate = 513,
     offStates = {'disconnected':1, 'loaded':1, 'connect':1,
                  'disconnect':1, 'failed':1, 'fatal':1},
 
@@ -67,13 +67,11 @@ var api = {}, // Public API interface
     test      = false,
     btnMask   = 0; // Mouse state
 
-//
 // Private Canvas functions
-//
 
 // Translate DOM key event to keysym value
 function getKeysym(e) {
-    var keysym, map1, map2, map3;
+    var keysym = e.keyCode, map1, map2, map3;
 
     map1 = {
         8  :0x08, 9  :0x09, 13 :0x0D, 27 :0x1B, 45 :0x63, 46 :0xFF,
@@ -86,12 +84,9 @@ function getKeysym(e) {
             219:91, 220:92, 221:93, 222:39 };
     if (gecko) { map2[109] = 45; }
 
-    map3 = {
-        48:41, 49:33, 50:64, 51:35, 52:36, 53:37, 54:94, 55:38,
-        56:42, 57:40, 59:58, 61:43, 44:60, 45:95, 46:62, 47:63,
-        96:126, 91:123, 92:124, 93:125, 39:34 };
-
-    keysym = e.keyCode;
+    map3 = {48:41, 49:33, 50:64, 51:35, 52:36, 53:37, 54:94, 55:38,
+            56:42, 57:40, 59:58, 61:43, 44:60, 45:95, 46:62, 47:63,
+            96:126, 91:123, 92:124, 93:125, 39:34 };
 
     // Remap modifier and special keys
     if (keysym in map1) { keysym = 0xFF00 + map1[keysym]; }
@@ -103,10 +98,8 @@ function getKeysym(e) {
     if (!!e.shiftKey) {
         if (keysym in map3) { keysym = map3[keysym]; }
     } else if ((keysym >= 65) && (keysym <=90)) {
-        // Remap unshifted A-Z
-        keysym += 32;
+        keysym += 32; // Remap unshifted A-Z
     } 
-
     return keysym;
 }
 
@@ -115,8 +108,7 @@ function eventPos(e, obj) {
     var x = 0, y = 0;
     if (obj.offsetParent) {
         while (obj) {
-            x += obj.offsetLeft;
-            y += obj.offsetTop;
+            x += obj.offsetLeft;  y += obj.offsetTop;
             obj = obj.offsetParent;
         }
     }
@@ -195,56 +187,53 @@ function c_modEvents(add) {
     f(focusContainer.body, 'contextmenu', onMouseDisable);
 }
 
-function c_resize(width, height) {
+function c_resize(w, h) {
     var c = target;
-    c.width = width; c.height = height;
+    c.width = w; c.height = h;
     c_width = c.offsetWidth; c_height = c.offsetHeight;
 }
 
-function c_fillRect(x, y, width, height, c) {
+function c_fillRect(x, y, w, h, c) {
     c_ctx.fillStyle = "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
-    c_ctx.fillRect(x, y, width, height);
+    c_ctx.fillRect(x, y, w, h);
 }
 
 function c_copyImage(x1, y1, x2, y2, w, h) {
     c_ctx.drawImage(target, x1, y1, w, h, x2, y2, w, h);
 }
 
-function c_blitImage(x, y, width, height, arr, offset) {
-    var img, i, j, data;
-    img = c_ctx.createImageData(width, height);
-    data = img.data;
-    for (i=0, j=offset; i < (width * height * 4); i=i+4, j=j+4) {
-        data[i + 0] = arr[j + 0];
-        data[i + 1] = arr[j + 1];
-        data[i + 2] = arr[j + 2];
-        data[i + 3] = 255; // Set Alpha
+function c_blitImage(x, y, w, h, arr, offset) {
+    var img, i, j, d;
+    img = c_ctx.createImageData(w, h);
+    d= img.data;
+    for (i=0, j=offset; i < (w * h * 4); i=i+4, j=j+4) {
+        d[i+0] = arr[j+0]; d[i+1] = arr[j+1]; d[i+2] = arr[j+2];
+        d[i+3] = 255; // Set Alpha
     }
     c_ctx.putImageData(img, x, y);
 }
 
 // Tile rendering functions
-function c_getTile(x, y, width, height, color) {
-    var img, data = [], r, g, b, i;
-    img = {'x': x, 'y': y, 'width': width, 'height': height,
-           'data': data};
+function c_getTile(x, y, w, h, color) {
+    var img, d = [], r, g, b, i;
+    img = {'x': x, 'y': y, 'width': w, 'height': h, 'data': d};
     r = color[0]; g = color[1]; b = color[2];
-    for (i = 0; i < (width * height * 4); i+=4) {
-        data[i] = r; data[i+1] = g; data[i+2] = b;
+    for (i = 0; i < (w * h * 4); i+=4) {
+        d[i] = r; d[i+1] = g; d[i+2] = b;
     }
     return img;
 }
 
 function c_setSubTile(img, x, y, w, h, color) {
-    var data, p, r, g, b, width, j, i, xend, yend;
-    data = img.data;
-    width = img.width;
+    var d, p, r, g, b, img_w, j, i, xend, yend;
+    d = img.data;
+    img_w = img.width;
     r = color[0]; g = color[1]; b = color[2];
     xend = x + w; yend = y + h;
     for (j = y; j < yend; j++) {
         for (i = x; i < xend; i++) {
-            p = (i + (j * width) ) * 4;
-            data[p+0] = r; data[p+1] = g; data[p+2] = b;
+            p = (i + (j * img_w) ) * 4;
+            d[p+0] = r; d[p+1] = g; d[p+2] = b;
         }   
     } 
 }
@@ -253,9 +242,7 @@ function c_putTile(img) {
     c_blitImage(img.x, img.y, img.width, img.height, img.data, 0);
 }
 
-//
 // Private RFB/VNC functions
-//
 
 function init_vars() {
     rQ        = [];
@@ -435,9 +422,20 @@ function recv_msg(e) {
 }
 
 // base64 encode and put on send queue, overridable for testing
-function send_msg(arr) {
+function send_msg(arr, now, req) {
+    if (typeof req === 'number') {
+        arr = arr.concat(fbUpdateRequest(req));
+    }
     sQ += window.btoa(arr.map(function (c) {
             return String.fromCharCode(c); } ).join(''));
+    if (now) {
+        if (sQ && ws.bufferedAmount === 0) {
+            if (! test) { ws.send(sQ); }
+            sQ = "";
+        } else if (sQ) {
+            debug("Delaying send");
+        }
+    }
 }
 
 function genDES(password, challenge) {
@@ -449,16 +447,16 @@ function genDES(password, challenge) {
 }
 
 keyPress = function (keysym, down) {
-    send_msg(keyEvent(keysym, down).concat(fbUpdateRequest(1)));
+    send_msg(keyEvent(keysym, down), true, 1);
 };
 
 mouseButton = function(x, y, down, bmask) {
     btnMask = down ? btnMask |= bmask : btnMask ^= bmask;
-    send_msg( pointerEvent(x, y).concat(fbUpdateRequest(1)) );
+    send_msg( pointerEvent(x, y), true, 1);
 };
 
 mouseMove = function(x, y) {
-    send_msg( pointerEvent(x, y).concat(fbUpdateRequest(1)) );
+    send_msg( pointerEvent(x, y), true);
 };
 
 // Setup routines
@@ -528,7 +526,7 @@ pointerEvent = function(x, y) {
 
 // RFB/VNC initialisation message handler
 init_msg = function() {
-    var text, length, i, types, num_types, big_endian, response;
+    var text, len, i, types, big_endian;
 
     switch (rfb_state) {
 
@@ -539,46 +537,30 @@ init_msg = function() {
         if (!rfb_ver in {3:1, 6:1, 7:1, 8:1}) {
             return fail("Invalid server version '" + text + "'");
         }
-
-        // Send every 50ms, or at max network rate
-        sendTimer = setInterval(function() {
-                if (sQ && ws.bufferedAmount === 0) {
-                    if (! test) { ws.send(sQ); }
-                    sQ = "";
-                } else if (sQ) {
-                    debug("Delaying send");
-                } }, 25);
-
+        sendTimer = setInterval(function (){ send_msg([], true); }, 25);
         send_msg((text + "\n").split('').map(
-            function (chr) { return chr.charCodeAt(0); } ) );
+            function (chr) { return chr.charCodeAt(0); } ), true);
         state('Security', "Sent ProtocolVersion '" + text + "'");
         break;
 
     case 'Security' :
         if (rfb_ver >= 7) {
-            num_types = rQ[rQi++];
-            if (rQwait("security type", num_types, 1)) { return false; }
-            if (num_types === 0) {
+            len = rQ[rQi++];
+            if (rQwait("security type", len, 1)) { return false; }
+            if (len === 0) {
                 return fail("Security failure: " + rQstr(rQ4()));
             }
-            rfb_auth = 0;
-            types = rQbytes(num_types);
-            debug("Server security types: " + types);
-            for (i=0; i < types.length; i+=1) {
-                if ((types[i] > rfb_auth) && (types[i] < 3)) {
-                    rfb_auth = types[i];
-                }
-            }
-            if (rfb_auth === 0) {
-                return fail("Unknown security types: " + types);
-            }
-            
-            send_msg([rfb_auth]);
+            types = rQbytes(len).sort(function(a,b){ return a-b; });
+            debug("Auth types: " + types);
+            types = types.filter(function(x){ return x<3; });
+            if (!types) { return fail("No supported auth type"); }
+            rfb_auth = types[types.length-1];
+            send_msg([rfb_auth], true);
         } else {
             if (rQwait("security scheme", 4)) { return false; }
             rfb_auth = rQ4();
         }
-        state('Authentication', "Authenticating scheme: " + rfb_auth);
+        state('Authentication', "Using auth type: " + rfb_auth);
         init_msg();  // "fallthrough" (workaround JSLint)
         break;
 
@@ -591,12 +573,10 @@ init_msg = function() {
                 state('SecurityResult');
                 break;
             case 2:  // VNC authentication
-                if (password.length === 0) {
-                    return fail("Password Required");
-                }
+                if (! password) { return fail("Password Required"); }
                 if (rQwait("auth challenge", 16)) { return false; }
                 //debug("Sending DES encrypted auth response");
-                send_msg(genDES(password, rQbytes(16)));
+                send_msg(genDES(password, rQbytes(16)), true);
                 state('SecurityResult');
                 break;
             default:
@@ -605,54 +585,38 @@ init_msg = function() {
         break;
 
     case 'SecurityResult' :
-        if (rQlen() < 4) {
-            return fail("Invalid VNC auth response");
-        }
+        if (rQlen() < 4) { return fail("Invalid VNC auth response"); }
         switch (rQ4()) {
-            case 0:  // OK
-                state('ServerInitialisation', "Authentication OK");
-                break;
-            case 1:  // failed
+            case 0: state('ServerInitialisation', "Auth OK"); break;
+            case 1:
                 text = "Authentication failed";
                 if (rfb_ver >= 8) {
-                    length = rQ4();
-                    if (rQwait("SecurityResult reason", length, 8)) {
+                    len = rQ4();
+                    if (rQwait("SecurityResult reason", len, 8)) {
                         return false;
                     }
-                    text = rQstr(length);
+                    text = rQstr(len);
                 }
                 return fail(text);
-            case 2:  // too-many
-                return fail("Too many auth attempts");
+            case 2: return fail("Too many auth attempts");
         }
-        send_msg([shared ? 1 : 0]); // ClientInitialisation
+        send_msg([shared ? 1 : 0], true); // ClientInitialisation
         break;
 
     case 'ServerInitialisation' :
         if (rQlen()<24) { return fail("Invalid server init msg"); }
 
-        // Screen size
-        fb_width  = rQ2();
-        fb_height = rQ2();
-        debug("Screen: " + fb_width + "x" + fb_height);
-
-        // PIXEL_FORMAT
+        fb_width  = rQ2(); fb_height = rQ2(); // Screen size
         big_endian = rQ[rQi+3];
-        rQi += 16; // ignore server bpp, depth, true_color, pad
+        rQi += 16; // ignore bpp, depth, true_color, pad
 
-        // Connection name/title
-        text = "Unencrypted";
-        if (encrypt) { text = "Encrypted"; }
-        text += " connection to: " + rQstr(rQ4());
+        debug("Screen: " + fb_width + "x" + fb_height);
+        text = "connection to: " + rQstr(rQ4());
 
         c_resize(fb_width, fb_height);
         c_modEvents(true);
-
-        response = pixelFormat().concat(clientEncodings());
-        response = response.concat(fbUpdateRequest(0));
-        send_msg(response);
-        
-        state('normal', text);
+        send_msg(pixelFormat().concat(clientEncodings()), false, 0);
+        state('normal', (encrypt?"E":"Une") + "ncrypted " + text);
         break;
     }
 };
@@ -677,8 +641,7 @@ normal_msg = function() {
 framebufferUpdate = function() {
     if (FBU.rects === 0) {
         if (rQwait("FBU header", 3)) {
-            if (rQi === 0) { rQ.unshift(0); } // FBU msg_type
-            else           { rQi -= 1; }
+            rQ.unshift(0); // msg-type
             return false;
         }
         rQi++;
@@ -689,15 +652,12 @@ framebufferUpdate = function() {
     while (FBU.rects > 0) {
         if (rfb_state !== "normal") { return false; }
         if (rQwait("FBU")) { return false; }
-        if (FBU.bytes === 0) {
-            // New FramebufferUpdate
+        if (FBU.bytes === 0) {   // New FramebufferUpdate
             if (rQwait("rect header", 12)) { return false; }
 
             var h = rQbytes(12); // header
-            FBU.x   = (h[0]<<8)+h[1];
-            FBU.y   = (h[2]<<8)+h[3];
-            FBU.w   = (h[4]<<8)+h[5];
-            FBU.h   = (h[6]<<8)+h[7];
+            FBU.x = (h[0]<<8)+h[1];  FBU.y = (h[2]<<8)+h[3];
+            FBU.w = (h[4]<<8)+h[5];  FBU.h = (h[6]<<8)+h[7];
             FBU.enc = (h[8]<<24)+(h[9]<<16)+(h[10]<<8)+h[11];
 
             if (! FBU.enc in encFunc) {
@@ -721,18 +681,15 @@ framebufferUpdate = function() {
 // FramebufferUpdate encodings
 
 encFunc[0] = function display_raw() {
-    if (FBU.lines === 0) {
-        FBU.lines = FBU.h;
-    }
+    if (FBU.lines === 0) { FBU.lines = FBU.h; }
 
     var x = FBU.x, y = FBU.y + (FBU.h - FBU.lines), w = FBU.w,
-        h = Math.min(FBU.lines, Math.floor(rQlen()/(FBU.w * fb_Bpp)));
+        h = mM(FBU.lines, mF(rQlen()/(FBU.w * fb_Bpp)));
     FBU.bytes = w * fb_Bpp; // At least a line
     if (rQwait("RAW")) { return false; }
     c_blitImage(x, y, w, h, rQ, rQi);
     rQi += w * h * fb_Bpp;
     FBU.lines -= h;
-
     if (FBU.lines > 0) {
         FBU.bytes = FBU.w * fb_Bpp; // At least another line
     } else {
@@ -757,13 +714,12 @@ encFunc[5] = function display_hextile() {
         tile_x, x, w, tile_y, y, h, xy, s, sx, sy, wh, sw, sh;
 
     if (FBU.tiles === 0) {
-        FBU.tiles_x = Math.ceil(FBU.w/16);
-        FBU.tiles_y = Math.ceil(FBU.h/16);
+        FBU.tiles_x = mC(FBU.w/16);
+        FBU.tiles_y = mC(FBU.h/16);
         FBU.total_tiles = FBU.tiles_x * FBU.tiles_y;
         FBU.tiles = FBU.total_tiles;
     }
 
-    // FBU.bytes comes in as 1, rQlen() at least 1
     while (FBU.tiles > 0) {
         FBU.bytes = 1;
         if (rQwait("HEXTILE subencoding")) { return false; }
@@ -774,17 +730,20 @@ encFunc[5] = function display_hextile() {
         subrects = 0;
         cur_tile = FBU.total_tiles - FBU.tiles;
         tile_x = cur_tile % FBU.tiles_x;
-        tile_y = Math.floor(cur_tile / FBU.tiles_x);
+        tile_y = mF(cur_tile / FBU.tiles_x);
         x = FBU.x + tile_x * 16;
         y = FBU.y + tile_y * 16;
-        w = Math.min(16, (FBU.x + FBU.w) - x);
-        h = Math.min(16, (FBU.y + FBU.h) - y);
+        w = mM(16, (FBU.x + FBU.w) - x);
+        h = mM(16, (FBU.y + FBU.h) - y);
 
-        // Figure out how much we are expecting
+        // Calc FBU.bytes
         if (subenc & 0x01) { // Raw
             FBU.bytes += w * h * fb_Bpp;
         } else {
-            if (subenc & 0x06) { // Background or Foreground
+            if (subenc & 0x02) { // Background
+                FBU.bytes += fb_Bpp;
+            }
+            if (subenc & 0x04) { // Foreground
                 FBU.bytes += fb_Bpp;
             }
             if (subenc & 0x08) { // AnySubrects
@@ -800,7 +759,7 @@ encFunc[5] = function display_hextile() {
         }
         if (rQwait("hextile")) { return false; }
 
-        // We know the encoding and have a whole tile
+        // We have a whole tile
         FBU.subenc = rQ[rQi++];
         if (FBU.subenc === 0) {
             c_fillRect(x, y, w, h, FBU.bg);
@@ -838,7 +797,6 @@ encFunc[5] = function display_hextile() {
         FBU.bytes = 0;
         FBU.tiles -= 1;
     }
-
     if (FBU.tiles === 0) {
         FBU.rects -= 1;
     }
@@ -850,11 +808,9 @@ encFunc[-223] = function set_desktopsize() {
     fb_width = FBU.w;
     fb_height = FBU.h;
     c_resize(fb_width, fb_height);
-    send_msg(fbUpdateRequest(0)); // New non-incremental request
-
+    send_msg([], false, 0); // New non-incremental request
     FBU.bytes = 0;
     FBU.rects -= 1;
-
     debug("<< set_desktopsize");
     return true;
 };
@@ -881,7 +837,7 @@ api.sendCAD = function() {
     for (k in {0xffe3:1, 0xffe9:1, 0xffff:1}) {
         arr = keyEvent(k, 1).concat(arr.concat(keyEvent(k, 0)));
     }
-    send_msg(arr.concat(fbUpdateRequest(1)));
+    send_msg(arr, true, 1);
     return false;
 };
 
@@ -908,10 +864,10 @@ if (!window.WebSocket) {
 
 c_resize(640, 20);
 init_vars();
-setInterval(function () {
-    if (rfb_state === 'normal') {
-        send_msg(fbUpdateRequest(1));
-    } }, fbu_req_rate); // FBUrequest poll
+setInterval(function (){
+        if (rfb_state === 'normal') {
+            send_msg([], true, 1);
+        } }, FBUreq_rate);
 state('loaded', 'noVNC ready: native WebSockets');
 return api;  // Public API interface
 
@@ -983,7 +939,6 @@ mix(18,28,6,12);
 S8 = [v,e,a,y,b,v,d,b,q,c,y,r,x,s,e,d,c,t,u,f,r,q,w,x,f,z,z,w,t,u,s,a,
       s,a,x,e,d,w,e,s,u,d,t,c,w,b,a,v,z,y,q,t,c,u,v,z,y,r,r,f,f,q,b,x];
 
-// Encrypt 8 bytes
 function enc8(t) {
     var i = 0, j = 0, f, x, y, z = 0x3f, l, r;
 
