@@ -38,8 +38,8 @@ var api = {}, // Public API interface
     gecko = (function() { return (!document.getBoxObjectFor && window.mozInnerScreenX == null) ? false : true; }()),
 
     // Private RFB namespace variables
-    rfb_host = '',  rfb_port = 5900,  rfb_password = '',
-    rfb_state = '', rfb_version = 0, rfb_auth = '',
+    host = '', port = 5900, password = '',
+    rfb_state = '', rfb_ver = 0, rfb_auth = '',
     connTimeout = 2, discTimeout = 3, fbu_req_rate = 1413,
     offStates = {'disconnected':1, 'loaded':1, 'connect':1,
                  'disconnect':1, 'failed':1, 'fatal':1},
@@ -60,15 +60,12 @@ var api = {}, // Public API interface
         bytes  : 0
     },
 
-    fb_Bpp         = 4,
-    fb_depth       = 3,
-    fb_width       = 0,
-    fb_height      = 0,
-    fb_name        = "",
-    test_mode      = false,
-    // Mouse state
-    btnMask        = 0,
-    mouse_arr      = [];
+    fb_Bpp    = 4,
+    fb_depth  = 3,
+    fb_width  = 0,
+    fb_height = 0,
+    test      = false,
+    btnMask   = 0; // Mouse state
 
 //
 // Private Canvas functions
@@ -268,7 +265,6 @@ function init_vars() {
     FBU.lines = 0;  // RAW
     FBU.tiles = 0;  // HEXTILE
     btnMask   = 0;
-    mouse_arr = [];
 }
 
 // Receive Queue functions
@@ -314,8 +310,8 @@ function rQwait(msg, num, goback) {
 
 // Utility routines
 
-function state(newS, statusMsg) {
-    var func, cmsg, oldS = rfb_state;
+function state(newS, msg) {
+    var func = warn, oldS = rfb_state?rfb_state:'start';
 
     if (newS === oldS) {
         debug("Already in state '" + newS + "', ignoring.");
@@ -330,14 +326,11 @@ function state(newS, statusMsg) {
 
         if (c_ctx) {
             c_modEvents(false);
-            if (log_level !== 'debug') {
-                c_resize(640, 20);
-            }
+            c_resize(640, 20);
         }
 
         if (ws) {
-            if ((ws.readyState === WebSocket.OPEN) || 
-               (ws.readyState === WebSocket.CONNECTING)) {
+            if (ws.readyState !== WebSocket.CLOSED) {
                 debug("Closing WebSocket connection");
                 ws.close();
             }
@@ -345,31 +338,24 @@ function state(newS, statusMsg) {
         }
     }
 
-    if (oldS === 'fatal') {
-        error("Fatal error, cannot continue");
-    }
-
-    if ((newS === 'failed') || (newS === 'fatal')) {
-        func = error;
-    } else {
-        func = warn;
-    }
+    if (oldS === 'fatal') { error("Fatal error, cannot continue"); }
+    if (newS in {'failed':1,'fatal':1}) { func = error; }
 
     rfb_state = newS;
-    if ((oldS === 'failed') && (newS === 'disconnected')) {
-        // Do disconnect action, but stay in failed state.
+    if (oldS === 'failed' && newS === 'disconnected') {
+        // Do disconnect, but stay failed and no new message.
         rfb_state = 'failed';
+        msg = null;
     }
 
-    cmsg = typeof(statusMsg) !== 'undefined' ? (" Msg: " + statusMsg) : "";
-    func("New state '" + rfb_state + "', was '" + oldS + "'." + cmsg);
+    func("State " + rfb_state + " (was " + oldS + "). " + (msg?msg:''));
 
-    if (connTimer && (rfb_state !== 'connect')) {
+    if (connTimer && rfb_state !== 'connect') {
         debug("Clearing connect timer");
         connTimer = clearInterval(connTimer);
     }
 
-    if (discTimer && (rfb_state !== 'disconnect')) {
+    if (discTimer && rfb_state !== 'disconnect') {
         debug("Clearing disconnect timer");
         discTimer = clearInterval(discTimer);
     }
@@ -377,7 +363,7 @@ function state(newS, statusMsg) {
     switch (newS) {
     case 'connect':
         init_vars();
-        if (test_mode) {
+        if (test) {
             return state('ProtocolVersion', "Starting VNC handshake");
         }
         connTimer = setTimeout(function () {
@@ -385,27 +371,20 @@ function state(newS, statusMsg) {
             }, connTimeout * 1000);
         init_ws();
         break; // onopen transitions to 'ProtocolVersion'
-
     case 'disconnect':
-        if (! test_mode) {
+        if (! test) {
             discTimer = setTimeout(function () {
                     fail("Disconnect timeout");
                 }, discTimeout * 1000);
         }
         break; // onclose transitions to 'disconnected'
-
     case 'failed':
         // Make sure we transition to disconnected
         setTimeout(function() { state('disconnected'); }, 50);
         break;
     }
 
-    if ((oldS === 'failed') && (newS === 'disconnected')) {
-        // Leave the failed message
-        stateCallback(api, newS, oldS);
-    } else {
-        stateCallback(api, newS, oldS, statusMsg);
-    }
+    stateCallback(api, newS, oldS, msg);
     return false;
 }
 fail = function (msg){ return state('failed', msg); };
@@ -462,11 +441,11 @@ function send_msg(arr) {
 }
 
 function genDES(password, challenge) {
-    var i, passwd = [];
+    var i, parr = [];
     for (i=0; i < password.length; i++) {
-        passwd.push(password.charCodeAt(i));
+        parr.push(password.charCodeAt(i));
     }
-    return DES(passwd, challenge);
+    return DES(parr, challenge);
 }
 
 keyPress = function (keysym, down) {
@@ -485,23 +464,19 @@ mouseMove = function(x, y) {
 // Setup routines
 
 init_ws = function() {
-    var uri = encrypt ? "wss://" : "ws://";
-    uri += rfb_host + ":" + rfb_port + "/";
+    var uri = (encrypt?"wss://":"ws://") + host + ":" + port + "/";
     debug("connecting to " + uri);
 
     ws = new WebSocket(uri);
     ws.onmessage = recv_msg;
     ws.onopen = function(e) {
-        debug(">> WebSocket.onopen");
         if (rfb_state === "connect") {
             state('ProtocolVersion', "Starting VNC handshake");
         } else {
             fail("Got unexpected WebSockets connection");
         }
-        debug("<< WebSocket.onopen");
     };
     ws.onclose = function(e) {
-        debug(">> WebSocket.onclose");
         if (rfb_state === 'disconnect') {
             state('disconnected', 'VNC disconnected');
         } else if (rfb_state === 'ProtocolVersion') {
@@ -511,12 +486,9 @@ init_ws = function() {
         } else  {
             fail('Server disconnected');
         }
-        debug("<< WebSocket.onclose");
     };
     ws.onerror = function(e) {
-        debug(">> WebSocket.onerror");
         fail("WebSocket error");
-        debug("<< WebSocket.onerror");
     };
 };
 
@@ -556,35 +528,34 @@ pointerEvent = function(x, y) {
 
 // RFB/VNC initialisation message handler
 init_msg = function() {
-    var reason, length, i, types, num_types, big_endian, response;
+    var text, length, i, types, num_types, big_endian, response;
 
     switch (rfb_state) {
 
     case 'ProtocolVersion' :
         if (rQlen()<12) { return fail("Incomplete ProtocolVersion"); }
-        rfb_version = parseInt(rQstr(12).substr(10,1), 10);
-        if (rfb_version in {3:1, 6:1, 7:1, 8:1}) {
-            debug("Server ProtocolVersion: " + rfb_version);
-        } else {
-            return fail("Invalid server version " + rfb_version);
+        text = rQstr(12).substr(0,11);
+        rfb_ver = parseInt(text.charAt(10), 10);
+        if (!rfb_ver in {3:1, 6:1, 7:1, 8:1}) {
+            return fail("Invalid server version '" + text + "'");
         }
 
         // Send every 50ms, or at max network rate
         sendTimer = setInterval(function() {
                 if (sQ && ws.bufferedAmount === 0) {
-                    if (! test_mode) { ws.send(sQ); }
+                    if (! test) { ws.send(sQ); }
                     sQ = "";
                 } else if (sQ) {
                     debug("Delaying send");
                 } }, 25);
 
-        send_msg(("RFB 003.00" + rfb_version + "\n").split('').map(
+        send_msg((text + "\n").split('').map(
             function (chr) { return chr.charCodeAt(0); } ) );
-        state('Security', "Sent ProtocolVersion: 003.00" + rfb_version);
+        state('Security', "Sent ProtocolVersion '" + text + "'");
         break;
 
     case 'Security' :
-        if (rfb_version >= 7) {
+        if (rfb_ver >= 7) {
             num_types = rQ[rQi++];
             if (rQwait("security type", num_types, 1)) { return false; }
             if (num_types === 0) {
@@ -620,12 +591,12 @@ init_msg = function() {
                 state('SecurityResult');
                 break;
             case 2:  // VNC authentication
-                if (rfb_password.length === 0) {
+                if (password.length === 0) {
                     return fail("Password Required");
                 }
                 if (rQwait("auth challenge", 16)) { return false; }
                 //debug("Sending DES encrypted auth response");
-                send_msg(genDES(rfb_password, rQbytes(16)));
+                send_msg(genDES(password, rQbytes(16)));
                 state('SecurityResult');
                 break;
             default:
@@ -642,15 +613,15 @@ init_msg = function() {
                 state('ServerInitialisation', "Authentication OK");
                 break;
             case 1:  // failed
-                reason = "Authentication failed";
-                if (rfb_version >= 8) {
+                text = "Authentication failed";
+                if (rfb_ver >= 8) {
                     length = rQ4();
                     if (rQwait("SecurityResult reason", length, 8)) {
                         return false;
                     }
-                    reason = rQstr(length);
+                    text = rQstr(length);
                 }
-                return fail(reason);
+                return fail(text);
             case 2:  // too-many
                 return fail("Too many auth attempts");
         }
@@ -667,25 +638,21 @@ init_msg = function() {
 
         // PIXEL_FORMAT
         big_endian = rQ[rQi+3];
-        rQi += 4; // ignore server bpp, depth, true_color
+        rQi += 16; // ignore server bpp, depth, true_color, pad
 
         // Connection name/title
-        rQi+=12; // padding
-        fb_name = rQstr(rQ4());
+        text = "Unencrypted";
+        if (encrypt) { text = "Encrypted"; }
+        text += " connection to: " + rQstr(rQ4());
 
         c_resize(fb_width, fb_height);
         c_modEvents(true);
 
-        response = pixelFormat();
-        response = response.concat(clientEncodings());
+        response = pixelFormat().concat(clientEncodings());
         response = response.concat(fbUpdateRequest(0));
         send_msg(response);
         
-        if (encrypt) {
-            state('normal', "Connected (encrypted) to: " + fb_name);
-        } else {
-            state('normal', "Connected (unencrypted) to: " + fb_name);
-        }
+        state('normal', text);
         break;
     }
 };
@@ -897,9 +864,9 @@ encFunc[-223] = function set_desktopsize() {
 
 api.connect = function(h, p, pw) {
     if (!h || !p) { return fail("Must set host and port"); }
-    rfb_host     = h;
-    rfb_port     = p;
-    rfb_password = (pw !== undefined) ? pw : "";
+    host     = h;
+    port     = p;
+    password = (pw !== undefined) ? pw : "";
     state('connect');
 };
 
@@ -920,7 +887,7 @@ api.sendCAD = function() {
 
 api.testMode = function(override_send_msg) {
     // Overridable internal functions for testing
-    test_mode = true;
+    test = true;
     send_msg = override_send_msg;
     api.recv_message = recv_msg;  // Expose it
 };
@@ -959,59 +926,36 @@ return api;  // Public API interface
 
 DES = function(passwd, text) {
 
-var PC2, totrot, i,j,l,m,n,o, pc1m = [], pcr = [], kn = [],
-    a,b,c,d,e,f, q,r,s,t,u,v,w,x,y, z = 0x0,
-    S1,S2,S3,S4,S5,S6,S7,S8, keys = [];
+var PC2, pc1m=[], pcr=[], kn=[], S1,S2,S3,S4,S5,S6,S7,S8,
+    a,b,c,d,e,f, i,j,k,m,n, q,r,s,t,u,v,w,x,y, z = 0x0, K=[];
 
-// Set the keys based on the passwd.
-PC2 = [13,16,10,23, 0, 4, 2,27,14, 5,20, 9,22,18,11, 3,
-      25, 7,15, 6,26,19,12, 1,40,51,30,36,46,54,29,39,
-      50,44,32,47,43,48,38,55,33,52,45,41,49,35,28,31 ];
-totrot = [ 1, 2, 4, 6, 8,10,12,14,15,17,19,21,23,25,27,28];
-for (j = 0, l = 56; j < 56; ++j, l-=8) {
-    l += l<-5 ? 65 : l<-3 ? 31 : l<-1 ? 63 : l===27 ? 35 : 0; // PC1
-    m = l & 0x7;
-    pc1m[j] = ((passwd[l >>> 3] & (1<<m)) !== 0) ? 1: 0;
+// Derive K from passwd
+PC2 = [13,16,10,23,0,4,2,27,14,5,20,9,22,18,11,3,25,7,15,6,26,19,12,1,40,51,
+       30,36,46,54,29,39,50,44,32,47,43,48,38,55,33,52,45,41,49,35,28,31];
+for (i = 0, j = 56; i < 56; ++i, j-=8) {
+    j += j<-5 ? 65 : j<-3 ? 31 : j<-1 ? 63 : j===27 ? 35 : 0; // PC1
+    pc1m[i] = ((passwd[j >> 3] & (1<<(j & 0x7))) !== 0) ? 1: 0;
 }
 
-for (i = 0; i < 16; ++i) {
-    m = i << 1;
-    n = m + 1;
-    kn[m] = kn[n] = 0;
-    for (o=28; o<59; o+=28) {
-        for (j = o-28; j < o; ++j) {
-            l = j + totrot[i];
-            if (l < o) {
-                pcr[j] = pc1m[l];
-            } else {
-                pcr[j] = pc1m[l - 28];
-            }
-        }
+for (i = 0, j = 0; i < 16; i++, j+=2) {
+    kn[j] = kn[j+1] = 0;
+    for (m = 0; m < 56; m++) {
+        n = m + [1,2,4,6,8,10,12,14,15,17,19,21,23,25,27,28][i];
+        pcr[m] = n < (((m+36)>>5) * 28) ? pc1m[n] : pc1m[n-28];
     }
-    for (j = 0; j < 24; ++j) {
-        if (pcr[PC2[j]] !== 0) {
-            kn[m] |= 1<<(23-j);
-        }
-        if (pcr[PC2[j + 24]] !== 0) {
-            kn[n] |= 1<<(23-j);
-        }
+    for (k = 0; k < 24; k++) {
+        if (pcr[PC2[k]])      { kn[j]   |= 1<<(23-k); }
+        if (pcr[PC2[k + 24]]) { kn[j+1] |= 1<<(23-k); }
     }
 }
-// generate 32 24-bit subkeys
+// 32 x 24-bit subkeys
 for (i = 0; i < 32;) {
-    a = kn[i];
-    b = kn[i+1];
-    keys[i] = (a & 0x00fc0000) << 6;
-    keys[i] |= (a & 0x00000fc0) << 10;
-    keys[i] |= (b & 0x00fc0000) >>> 10;
-    keys[i++] |= (b & 0x00000fc0) >>> 6;
-    keys[i] = (a & 0x0003f000) << 12;
-    keys[i] |= (a & 0x0000003f) << 16;
-    keys[i] |= (b & 0x0003f000) >>> 4;
-    keys[i++] |= (b & 0x0000003f);
+    a = kn[i]; b = kn[i+1]; c = 0xfc0000; d = 0x03f000;
+    K[i++] = (a&c)<<6  | (a&0xfc0) << 10 | (b&c)>>10 | (b&0xfc0)>>6;
+    K[i++] = (a&d)<<12 | (a&0x3f) << 16  | (b&d)>>4  | (b&0x3f);
 }
 
-// Generate substitutions
+// Substitutions
 function mix(g,h,i,j) { a=1<<g; b=1<<h; c=a|b; d=1<<i; e=1<<j; f=d|e;
     q=a|d;r=a|e;s=a|f; t=b|d;u=b|e;v=b|f; w=c|d;x=c|e;y=c|f; }
 mix(16,24,2,10);
@@ -1039,78 +983,48 @@ mix(18,28,6,12);
 S8 = [v,e,a,y,b,v,d,b,q,c,y,r,x,s,e,d,c,t,u,f,r,q,w,x,f,z,z,w,t,u,s,a,
       s,a,x,e,d,w,e,s,u,d,t,c,w,b,a,v,z,y,q,t,c,u,v,z,y,r,r,f,f,q,b,x];
 
-// Encrypt 8 bytes of text
+// Encrypt 8 bytes
 function enc8(t) {
-    var i = 0, b = t.slice(), fval, keysi = 0,
-        l, r, x; // left, right, accumulator
+    var i = 0, j = 0, f, x, y, z = 0x3f, l, r;
 
     // Squash 8 bytes to 2 ints
-    l = b[i++]<<24 | b[i++]<<16 | b[i++]<<8 | b[i++];
-    r = b[i++]<<24 | b[i++]<<16 | b[i++]<<8 | b[i++];
+    l = t[i++]<<24 | t[i++]<<16 | t[i++]<<8 | t[i++];
+    r = t[i++]<<24 | t[i++]<<16 | t[i++]<<8 | t[i++];
 
-    x = ((l >>> 4) ^ r) & 0x0f0f0f0f;
-    r ^= x; l ^= (x << 4);
-    x = ((l >>> 16) ^ r) & 0x0000ffff;
-    r ^= x; l ^= (x << 16);
-    x = ((r >>> 2) ^ l) & 0x33333333;
-    r ^= (x << 2); l ^= x;
-    x = ((r >>> 8) ^ l) & 0x00ff00ff;
-    r ^= (x << 8); l ^= x;
-    r = (r << 1) | ((r >>> 31) & 1);
-    x = (l ^ r) & 0xaaaaaaaa;
-    r ^= x; l ^= x;
-    l = (l << 1) | ((l >>> 31) & 1);
+    a=0x0f0f0f0f; b=0xffff; c=0x33333333; d=0xff00ff; e=0xaaaaaaaa;
+    x = (l >> 4 ^ r)  & a; r ^= x;      l ^= x << 4;
+    x = (l >> 16 ^ r) & b; r ^= x;      l ^= x << 16;
+    x = (r >> 2 ^ l)  & c; r ^= x << 2; l ^= x;
+    x = (r >> 8 ^ l)  & d; r ^= x << 8; l ^= x;
+    r = r << 1 | (r >> 31 & 1);
+    x = (l ^ r) & e;        r ^= x;      l ^= x;
+    l = l << 1 | (l >> 31 & 1);
 
-    for (i = 0; i < 8; ++i) {
-        x = (r << 28) | (r >>> 4);
-        x ^= keys[keysi++];
-        fval =  S7[x & 0x3f];
-        fval |= S5[(x >>> 8) & 0x3f];
-        fval |= S3[(x >>> 16) & 0x3f];
-        fval |= S1[(x >>> 24) & 0x3f];
-        x = r ^ keys[keysi++];
-        fval |= S8[x & 0x3f];
-        fval |= S6[(x >>> 8) & 0x3f];
-        fval |= S4[(x >>> 16) & 0x3f];
-        fval |= S2[(x >>> 24) & 0x3f];
-        l ^= fval;
-        x = (l << 28) | (l >>> 4);
-        x ^= keys[keysi++];
-        fval =  S7[x & 0x3f];
-        fval |= S5[(x >>> 8) & 0x3f];
-        fval |= S3[(x >>> 16) & 0x3f];
-        fval |= S1[(x >>> 24) & 0x3f];
-        x = l ^ keys[keysi++];
-        fval |= S8[x & 0x0000003f];
-        fval |= S6[(x >>> 8) & 0x3f];
-        fval |= S4[(x >>> 16) & 0x3f];
-        fval |= S2[(x >>> 24) & 0x3f];
-        r ^= fval;
+    for (i = 0; i < 16; ++i) {
+        x = K[j++] ^ ((i%2 ? l : r) << 28 | (i%2 ? l : r) >>> 4);
+        y = K[j++] ^ (i%2 ? l : r);
+        f = S7[z&x] | S5[z&x>>8] | S3[z&x>>16] | S1[z&x>>24] |
+            S8[z&y] | S6[z&y>>8] | S4[z&y>>16] | S2[z&y>>24];
+        if (i%2) { r ^= f; } else { l ^= f; }
     }
 
-    r = (r << 31) | (r >>> 1);
-    x = (l ^ r) & 0xaaaaaaaa;
-    l ^= x; r ^= x;
-    l = (l << 31) | (l >>> 1);
-    x = ((l >>> 8) ^ r) & 0x00ff00ff;
-    l ^= (x << 8); r ^= x; 
-    x = ((l >>> 2) ^ r) & 0x33333333;
-    l ^= (x << 2); r ^= x;
-    x = ((r >>> 16) ^ l) & 0x0000ffff;
-    l ^= x; r ^= (x << 16);
-    x = ((r >>> 4) ^ l) & 0x0f0f0f0f;
-    l ^= x; r ^= (x << 4);
+    r = r << 31 | r >>> 1;
+    x = (l ^ r) & e;        r ^= x;       l ^= x;
+    l = l << 31 | l >>> 1;
+    x = (l >> 8 ^ r)  & d; r ^= x;       l ^= x << 8;
+    x = (l >> 2 ^ r)  & c; r ^= x;       l ^= x << 2;
+    x = (r >> 16 ^ l) & b; r ^= x << 16; l ^= x;
+    x = (r >> 4 ^ l)  & a; r ^= x << 4;  l ^= x;
 
     // Spread ints to bytes
-    x = [r, l];
-    for (i = 0; i < 8; i++) {
-        b[i] = (x[i>>>2] >>> (8*(3 - (i%4)))) % 256;
-        if (b[i] < 0) { b[i] += 256; } // unsigned
+    for (x = [r, l], i = 0; i < 8; i++) {
+        t[i] = (x[i>>2] >> (8*(3 - (i%4)))) % 256;
+        if (t[i] < 0) { t[i] += 256; } // unsigned
     }
-    return b;
+    return t;
 }
 
-// Encrypt 16 bytes of text using passwd as key
+// Encrypt 16 bytes
 return enc8(text.slice(0,8)).concat(enc8(text.slice(8,16)));
 
-}; // End of DES()
+}; // DES
