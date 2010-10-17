@@ -36,12 +36,12 @@ of magnitude larger than the size of the full noVNC client so the code
 size is really a non-issue in practice.
 
 Diet noVNC is not an example of good coding practices. While it passes
-(JSLint)[http://www.jslint.com/], I make liberal use of techniques
+[JSLint](http://www.jslint.com/), I make liberal use of techniques
 that have minimal code size, but that I would not use in regular code.
 
 Other:
 
-* All code modules have been combined into vnc.js and are no longer
+* All code modules have been combined into `vnc.js` and are no longer
   usable as standalone libraries.
 * The API is more rigid, easy integration is not a core goal.
 * There is less debug and stastics reporting.
@@ -51,7 +51,7 @@ Other:
 
 ### Missing
 
-* wsproxy (WebSockets to TCP proxy script)
+* `wsproxy` (WebSockets to TCP proxy script)
 * WebSockets emulation (must have native WebSockets)
 * VNC Password Authentication
 * RRE protocol
@@ -75,7 +75,7 @@ Other:
 ### Usage
 
 See the [noVNC README](http://github.com/kanaka/noVNC/) for full usage
-instructions. You will probably need to run wsproxy from noVNC in
+instructions. You will probably need to run `wsproxy` from noVNC in
 order to use Diet noVNC.
 
 Diet noVNC does not support password authentication (another reason
