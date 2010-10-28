@@ -18,14 +18,15 @@ Diet noVNC is 22 KB of Javascript + HTML (less than 10 KB w/ Packer 3).
 ### Why?
 
 That is a good question. Essentially, I was inspired by the Javascript
-(10K Apart)[http://10k.aneventapart.com/] contest to do something neat
+[10K Apart](http://10k.aneventapart.com/) contest to do something neat
 using less than 10K of Javascript + HTML.  Unfortunately, the contest
 was already done by the time I started.
 
-Also, I enjoy applying minimalism to code. There is a deep hacker
-satisfaction from taking something large and stripping it down to the
-bare essential. In some ways it is similar to creating a Quine; both
-require a conceptual leap in understanding of a given language.
+Also, I enjoy applying minimalism to code (sometimes called "code
+golf"). There is a deep hacker satisfaction from taking something
+large and stripping it down to the bare essential. In some ways it is
+similar to creating a Quine; both require a conceptual leap in
+understanding of a given language.
 
 
 ### Caveats
